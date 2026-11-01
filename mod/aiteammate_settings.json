@@ -1,0 +1,14 @@
+{
+  "coordinationEnabled": false,
+  "waitEnabled": false,
+  "holdEnabled": false,
+  "midturnEnabled": false,
+  "autoRouteFollowEnabled": true,
+  "autoCardRewardEnabled": true,
+  "autoEventEnabled": true,
+  "autoRestSiteEnabled": true,
+  "autoNeowEnabled": true,
+  "shopCardRemovalEnabled": true,
+  "floatingEndTurnEnabled": false,
+  "fixedP1CombatControl": true
+}

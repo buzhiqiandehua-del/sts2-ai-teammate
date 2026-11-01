@@ -1,0 +1,3084 @@
+{
+  "_formula_metadata": {
+    "version": "1.0",
+    "directive": "#5.0.5 Task 3",
+    "formula": "Score = Base(Rarity) + TypeBonus + CostModifier + TagBonuses - DuplicatePenalty",
+    "weights": {
+      "baseRarity": {
+        "Basic": 40.0,
+        "Common": 60.0,
+        "Uncommon": 75.0,
+        "Rare": 85.0,
+        "Special": 70.0
+      },
+      "typeBonus": {
+        "Attack": 5.0,
+        "Skill": 5.0,
+        "Power": 10.0
+      },
+      "costModifier": {
+        "0": 5.0,
+        "1": 5.0,
+        "2": 0.0,
+        "3+": -5.0
+      },
+      "tagBonuses": {
+        "draw": 10.0,
+        "energy": 12.0,
+        "strength": 8.0,
+        "scaling": 10.0,
+        "block": 5.0,
+        "aoe": 6.0,
+        "exhaust": 4.0,
+        "poison": 8.0,
+        "focus": 12.0,
+        "lightning": 6.0,
+        "frost": 7.0
+      },
+      "ironcladAlignment": "Aligned with SpireStrategist CardCatalog.Values and StrategicValue.Assess"
+    }
+  },
+  "formula": {
+    "rarity_weights": {
+      "Basic": 40.0,
+      "Common": 60.0,
+      "Uncommon": 75.0,
+      "Rare": 85.0,
+      "Special": 70.0
+    },
+    "type_weights": {
+      "Attack": 5.0,
+      "Skill": 5.0,
+      "Power": 10.0
+    },
+    "cost_weights": {
+      "0": 5.0,
+      "1": 5.0,
+      "2": 0.0,
+      "3+": -5.0
+    },
+    "pick_threshold": 50.0
+  },
+  "archetypes": {
+    "Ironclad": {
+      "Strength": [
+        "Spot Weakness",
+        "Demon Form",
+        "Heavy Blade",
+        "Inflame",
+        "Limit Break",
+        "Sword Boomerang",
+        "Pummel",
+        "Flex",
+        "Twin Strike",
+        "Reaper"
+      ],
+      "Block": [
+        "Barricade",
+        "Body Slam",
+        "Entrench",
+        "Impervious",
+        "Iron Wave",
+        "Ghostly Armor",
+        "Power Through",
+        "Second Wind",
+        "Flame Barrier",
+        "Juggernaut"
+      ],
+      "Exhaust": [
+        "Corruption",
+        "Feel No Pain",
+        "Dark Embrace",
+        "Fiend Fire",
+        "True Grit",
+        "Burning Pact",
+        "Havoc",
+        "Sentinel",
+        "Exhume",
+        "Offering"
+      ]
+    },
+    "Silent": {
+      "Poison": [
+        "Deadly Poison",
+        "Bouncing Flask",
+        "Crippling Cloud",
+        "Catalyst",
+        "Noxious Fumes",
+        "Corpse Explosion",
+        "Poisoned Stab",
+        "Envenom",
+        "Bane",
+        "Alchemize"
+      ],
+      "Shiv": [
+        "Blade Dance",
+        "Cloak and Dagger",
+        "Accuracy",
+        "Infinite Blades",
+        "Storm of Steel",
+        "Finisher",
+        "Choke",
+        "Backstab",
+        "Phantasmal Killer",
+        "A Thousand Cuts"
+      ],
+      "Discard": [
+        "Acrobatics",
+        "Backflip",
+        "Dagger Throw",
+        "Prepared",
+        "Sneaky Strike",
+        "Eviscerate",
+        "Tactician",
+        "Reflex",
+        "Calculated Gamble",
+        "Unload"
+      ]
+    },
+    "Defect": {
+      "Lightning": [
+        "Ball Lightning",
+        "Zap",
+        "Electrodynamics",
+        "Static Discharge",
+        "Storm",
+        "Thunder Strike",
+        "Tempest",
+        "Rainbow",
+        "Charge Battery",
+        "Sweeping Beam"
+      ],
+      "Frost": [
+        "Cold Snap",
+        "Coolheaded",
+        "Glacier",
+        "Blizzard",
+        "Frostbite",
+        "Capacitor",
+        "Consume",
+        "Defragment",
+        "Biased Cognition",
+        "Loop"
+      ],
+      "Focus": [
+        "Defragment",
+        "Biased Cognition",
+        "Consume",
+        "Capacitor",
+        "Loop",
+        "Glacier",
+        "Ball Lightning",
+        "Seek",
+        "Echo Form",
+        "Creative AI"
+      ]
+    },
+    "Watcher": {
+      "Calm": [
+        "Tranquility",
+        "Like Water",
+        "Meditate",
+        "Fear No Evil",
+        "Empty Body",
+        "Vigilance",
+        "Inner Peace",
+        "Nirvana",
+        "Perseverance",
+        "Sanctity"
+      ],
+      "Wrath": [
+        "Crescendo",
+        "Eruption",
+        "Simmering Fury",
+        "Tantrum",
+        "Empty Fist",
+        "Bowling Bash",
+        "Crush Joints",
+        "Flurry of Blows",
+        "Carve Reality",
+        "Reach Heaven"
+      ],
+      "StanceDance": [
+        "Flurry of Blows",
+        "Rushdown",
+        "Mental Fortress",
+        "Talk to the Hand",
+        "Empty Mind",
+        "Swivel",
+        "Vault",
+        "Scrawl",
+        "Weave",
+        "Empty Fist"
+      ]
+    }
+  },
+  "total": 227,
+  "cards": {
+    "CARD.AGGRESSION": {
+      "id": "CARD.AGGRESSION",
+      "name": "Aggression",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "power",
+        "scaling",
+        "scaling-engine",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.ANGER": {
+      "id": "CARD.ANGER",
+      "name": "Anger",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 75.0,
+      "tags": [
+        "attack",
+        "burst"
+      ]
+    },
+    "CARD.ARMAMENTS": {
+      "id": "CARD.ARMAMENTS",
+      "name": "Armaments",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "upgrade"
+      ]
+    },
+    "CARD.ASHEN_STRIKE": {
+      "id": "CARD.ASHEN_STRIKE",
+      "name": "AshenStrike",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "soul"
+      ]
+    },
+    "CARD.BARRICADE": {
+      "id": "CARD.BARRICADE",
+      "name": "Barricade",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.BASH": {
+      "id": "CARD.BASH",
+      "name": "Bash",
+      "character": "Ironclad",
+      "rarity": "Basic",
+      "score": 45.0,
+      "tags": [
+        "attack",
+        "vulnerable",
+        "vulnerable-source"
+      ]
+    },
+    "CARD.BATTLE_TRANCE": {
+      "id": "CARD.BATTLE_TRANCE",
+      "name": "BattleTrance",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 95.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.BLAZE": {
+      "id": "CARD.BLAZE",
+      "name": "Blaze",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "attack",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.BLOOD_WALL": {
+      "id": "CARD.BLOOD_WALL",
+      "name": "BloodWall",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 83.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.BLOODLETTING": {
+      "id": "CARD.BLOODLETTING",
+      "name": "Bloodletting",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 93.0,
+      "tags": [
+        "skill",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.BLUDGEON": {
+      "id": "CARD.BLUDGEON",
+      "name": "Bludgeon",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 75.0,
+      "tags": [
+        "attack",
+        "burst",
+        "heavy"
+      ]
+    },
+    "CARD.BODY_SLAM": {
+      "id": "CARD.BODY_SLAM",
+      "name": "BodySlam",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 78.0,
+      "tags": [
+        "attack",
+        "block",
+        "block-scaling"
+      ]
+    },
+    "CARD.BRAND": {
+      "id": "CARD.BRAND",
+      "name": "Brand",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "power",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.BREAK": {
+      "id": "CARD.BREAK",
+      "name": "Break",
+      "character": "Ironclad",
+      "rarity": "Ancient",
+      "score": 68.0,
+      "tags": [
+        "attack",
+        "strength_down"
+      ]
+    },
+    "CARD.BREAKTHROUGH": {
+      "id": "CARD.BREAKTHROUGH",
+      "name": "Breakthrough",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "pierce"
+      ]
+    },
+    "CARD.BULLY": {
+      "id": "CARD.BULLY",
+      "name": "Bully",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "attack",
+        "tempo"
+      ]
+    },
+    "CARD.BURNING_PACT": {
+      "id": "CARD.BURNING_PACT",
+      "name": "BurningPact",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 97.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "exhaust",
+        "exhaust-fuel",
+        "skill"
+      ]
+    },
+    "CARD.CASCADE": {
+      "id": "CARD.CASCADE",
+      "name": "Cascade",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.CINDER": {
+      "id": "CARD.CINDER",
+      "name": "Cinder",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 70.0,
+      "tags": [
+        "attack",
+        "burn"
+      ]
+    },
+    "CARD.COLOSSUS": {
+      "id": "CARD.COLOSSUS",
+      "name": "Colossus",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "heavy",
+        "skill"
+      ]
+    },
+    "CARD.CONFLAGRATION": {
+      "id": "CARD.CONFLAGRATION",
+      "name": "Conflagration",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "burn",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.CORRUPTION": {
+      "id": "CARD.CORRUPTION",
+      "name": "Corruption",
+      "character": "Ironclad",
+      "rarity": "Ancient",
+      "score": 69.0,
+      "tags": [
+        "exhaust",
+        "exhaust-fuel",
+        "power"
+      ]
+    },
+    "CARD.CRIMSON_MANTLE": {
+      "id": "CARD.CRIMSON_MANTLE",
+      "name": "CrimsonMantle",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "heal",
+        "power"
+      ]
+    },
+    "CARD.CRUELTY": {
+      "id": "CARD.CRUELTY",
+      "name": "Cruelty",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "power",
+        "scaling",
+        "scaling-engine",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.DARK_EMBRACE": {
+      "id": "CARD.DARK_EMBRACE",
+      "name": "DarkEmbrace",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "exhaust",
+        "exhaust-fuel",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.DEFEND_IRONCLAD": {
+      "id": "CARD.DEFEND_IRONCLAD",
+      "name": "DefendIronclad",
+      "character": "Ironclad",
+      "rarity": "Basic",
+      "score": 53.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill"
+      ]
+    },
+    "CARD.DEMON_FORM": {
+      "id": "CARD.DEMON_FORM",
+      "name": "DemonForm",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "power",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.DEMONIC_SHIELD": {
+      "id": "CARD.DEMONIC_SHIELD",
+      "name": "DemonicShield",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 98.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.DISMANTLE": {
+      "id": "CARD.DISMANTLE",
+      "name": "Dismantle",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "exhaust",
+        "exhaust-fuel"
+      ]
+    },
+    "CARD.DOMINATE": {
+      "id": "CARD.DOMINATE",
+      "name": "Dominate",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "control",
+        "power",
+        "skill"
+      ]
+    },
+    "CARD.DRUM_OF_BATTLE": {
+      "id": "CARD.DRUM_OF_BATTLE",
+      "name": "DrumOfBattle",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 93.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.EVIL_EYE": {
+      "id": "CARD.EVIL_EYE",
+      "name": "EvilEye",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "debuff",
+        "skill"
+      ]
+    },
+    "CARD.EXPECT_A_FIGHT": {
+      "id": "CARD.EXPECT_A_FIGHT",
+      "name": "ExpectAFight",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 75.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.FEED": {
+      "id": "CARD.FEED",
+      "name": "Feed",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "attack",
+        "heal",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.FEEL_NO_PAIN": {
+      "id": "CARD.FEEL_NO_PAIN",
+      "name": "FeelNoPain",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "exhaust",
+        "exhaust-fuel",
+        "power"
+      ]
+    },
+    "CARD.FIEND_FIRE": {
+      "id": "CARD.FIEND_FIRE",
+      "name": "FiendFire",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 97.0,
+      "tags": [
+        "attack",
+        "exhaust",
+        "exhaust-fuel"
+      ]
+    },
+    "CARD.FIGHT_ME": {
+      "id": "CARD.FIGHT_ME",
+      "name": "FightMe",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "attack",
+        "tempo"
+      ]
+    },
+    "CARD.FLAME_BARRIER": {
+      "id": "CARD.FLAME_BARRIER",
+      "name": "FlameBarrier",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill"
+      ]
+    },
+    "CARD.FORGOTTEN_RITUAL": {
+      "id": "CARD.FORGOTTEN_RITUAL",
+      "name": "ForgottenRitual",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 95.0,
+      "tags": [
+        "energy",
+        "energy-engine",
+        "skill"
+      ]
+    },
+    "CARD.HAVOC": {
+      "id": "CARD.HAVOC",
+      "name": "Havoc",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "exhaust",
+        "exhaust-fuel",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.HEADBUTT": {
+      "id": "CARD.HEADBUTT",
+      "name": "Headbutt",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "tutor"
+      ]
+    },
+    "CARD.HELLRAISER": {
+      "id": "CARD.HELLRAISER",
+      "name": "Hellraiser",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "burn",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.HEMOKINESIS": {
+      "id": "CARD.HEMOKINESIS",
+      "name": "Hemokinesis",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "burst",
+        "hp_loss"
+      ]
+    },
+    "CARD.HOWL_FROM_BEYOND": {
+      "id": "CARD.HOWL_FROM_BEYOND",
+      "name": "HowlFromBeyond",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 75.0,
+      "tags": [
+        "attack",
+        "scaling",
+        "scaling-engine",
+        "soul"
+      ]
+    },
+    "CARD.IMPERVIOUS": {
+      "id": "CARD.IMPERVIOUS",
+      "name": "Impervious",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "defense",
+        "skill"
+      ]
+    },
+    "CARD.INFERNAL_BLADE": {
+      "id": "CARD.INFERNAL_BLADE",
+      "name": "InfernalBlade",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "burn",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.INFERNO": {
+      "id": "CARD.INFERNO",
+      "name": "Inferno",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "burn",
+        "power"
+      ]
+    },
+    "CARD.INFLAME": {
+      "id": "CARD.INFLAME",
+      "name": "Inflame",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 96.0,
+      "tags": [
+        "power",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.IRON_WAVE": {
+      "id": "CARD.IRON_WAVE",
+      "name": "IronWave",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "block",
+        "block-scaling"
+      ]
+    },
+    "CARD.JUGGERNAUT": {
+      "id": "CARD.JUGGERNAUT",
+      "name": "Juggernaut",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.JUGGLING": {
+      "id": "CARD.JUGGLING",
+      "name": "Juggling",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "power",
+        "retain",
+        "tempo"
+      ]
+    },
+    "CARD.MANGLE": {
+      "id": "CARD.MANGLE",
+      "name": "Mangle",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "exhaust",
+        "exhaust-fuel",
+        "heavy"
+      ]
+    },
+    "CARD.MIDNIGHT": {
+      "id": "CARD.MIDNIGHT",
+      "name": "Midnight",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "control",
+        "soul"
+      ]
+    },
+    "CARD.MOLTEN_FIST": {
+      "id": "CARD.MOLTEN_FIST",
+      "name": "MoltenFist",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "burn",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.NOT_YET": {
+      "id": "CARD.NOT_YET",
+      "name": "NotYet",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.OFFERING": {
+      "id": "CARD.OFFERING",
+      "name": "Offering",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "energy",
+        "energy-engine",
+        "skill"
+      ]
+    },
+    "CARD.ONE_TWO_PUNCH": {
+      "id": "CARD.ONE_TWO_PUNCH",
+      "name": "OneTwoPunch",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "attack",
+        "burst",
+        "skill"
+      ]
+    },
+    "CARD.OUTRAGE": {
+      "id": "CARD.OUTRAGE",
+      "name": "Outrage",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 93.0,
+      "tags": [
+        "attack",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.PACTS_END": {
+      "id": "CARD.PACTS_END",
+      "name": "PactsEnd",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.PERFECTED_STRIKE": {
+      "id": "CARD.PERFECTED_STRIKE",
+      "name": "PerfectedStrike",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 70.0,
+      "tags": [
+        "attack",
+        "consistency"
+      ]
+    },
+    "CARD.PILLAGE": {
+      "id": "CARD.PILLAGE",
+      "name": "Pillage",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "gold"
+      ]
+    },
+    "CARD.POMMEL_STRIKE": {
+      "id": "CARD.POMMEL_STRIKE",
+      "name": "PommelStrike",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.PRIMAL_FORCE": {
+      "id": "CARD.PRIMAL_FORCE",
+      "name": "PrimalForce",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "skill",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.PYRE": {
+      "id": "CARD.PYRE",
+      "name": "Pyre",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "burn",
+        "exhaust",
+        "exhaust-fuel",
+        "power"
+      ]
+    },
+    "CARD.RAGE": {
+      "id": "CARD.RAGE",
+      "name": "Rage",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 93.0,
+      "tags": [
+        "skill",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.RAMPAGE": {
+      "id": "CARD.RAMPAGE",
+      "name": "Rampage",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.RUPTURE": {
+      "id": "CARD.RUPTURE",
+      "name": "Rupture",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "power",
+        "scaling",
+        "scaling-engine",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.SECOND_WIND": {
+      "id": "CARD.SECOND_WIND",
+      "name": "SecondWind",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "exhaust",
+        "exhaust-fuel",
+        "skill"
+      ]
+    },
+    "CARD.SETUP_STRIKE": {
+      "id": "CARD.SETUP_STRIKE",
+      "name": "SetupStrike",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "combo"
+      ]
+    },
+    "CARD.SHRUG_IT_OFF": {
+      "id": "CARD.SHRUG_IT_OFF",
+      "name": "ShrugItOff",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 78.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill"
+      ]
+    },
+    "CARD.SPITE": {
+      "id": "CARD.SPITE",
+      "name": "Spite",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "attack",
+        "passive"
+      ]
+    },
+    "CARD.STAMPEDE": {
+      "id": "CARD.STAMPEDE",
+      "name": "Stampede",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "attack",
+        "power",
+        "tempo"
+      ]
+    },
+    "CARD.STOKE": {
+      "id": "CARD.STOKE",
+      "name": "Stoke",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "energy",
+        "energy-engine",
+        "skill"
+      ]
+    },
+    "CARD.STOMP": {
+      "id": "CARD.STOMP",
+      "name": "Stomp",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 75.0,
+      "tags": [
+        "attack",
+        "stun"
+      ]
+    },
+    "CARD.STONE_ARMOR": {
+      "id": "CARD.STONE_ARMOR",
+      "name": "StoneArmor",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 93.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power"
+      ]
+    },
+    "CARD.STRIKE_IRONCLAD": {
+      "id": "CARD.STRIKE_IRONCLAD",
+      "name": "StrikeIronclad",
+      "character": "Ironclad",
+      "rarity": "Basic",
+      "score": 48.0,
+      "tags": [
+        "attack",
+        "basic"
+      ]
+    },
+    "CARD.SWORD_BOOMERANG": {
+      "id": "CARD.SWORD_BOOMERANG",
+      "name": "SwordBoomerang",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack"
+      ]
+    },
+    "CARD.TANK": {
+      "id": "CARD.TANK",
+      "name": "Tank",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.TAUNT": {
+      "id": "CARD.TAUNT",
+      "name": "Taunt",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "skill",
+        "taunt",
+        "tempo"
+      ]
+    },
+    "CARD.TEAR_ASUNDER": {
+      "id": "CARD.TEAR_ASUNDER",
+      "name": "TearAsunder",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "attack",
+        "exhaust",
+        "exhaust-fuel",
+        "heavy"
+      ]
+    },
+    "CARD.THRASH": {
+      "id": "CARD.THRASH",
+      "name": "Thrash",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "attack",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.THUNDERCLAP": {
+      "id": "CARD.THUNDERCLAP",
+      "name": "Thunderclap",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "vulnerable",
+        "vulnerable-source"
+      ]
+    },
+    "CARD.TREMBLE": {
+      "id": "CARD.TREMBLE",
+      "name": "Tremble",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "control",
+        "debuff",
+        "skill"
+      ]
+    },
+    "CARD.TRUE_GRIT": {
+      "id": "CARD.TRUE_GRIT",
+      "name": "TrueGrit",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "exhaust",
+        "exhaust-fuel",
+        "skill"
+      ]
+    },
+    "CARD.TWIN_STRIKE": {
+      "id": "CARD.TWIN_STRIKE",
+      "name": "TwinStrike",
+      "character": "Ironclad",
+      "rarity": "Common",
+      "score": 73.0,
+      "tags": [
+        "attack",
+        "burst"
+      ]
+    },
+    "CARD.UNMOVABLE": {
+      "id": "CARD.UNMOVABLE",
+      "name": "Unmovable",
+      "character": "Ironclad",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.UNRELENTING": {
+      "id": "CARD.UNRELENTING",
+      "name": "Unrelenting",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "attack",
+        "tempo"
+      ]
+    },
+    "CARD.UPPERCUT": {
+      "id": "CARD.UPPERCUT",
+      "name": "Uppercut",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "attack",
+        "vulnerable",
+        "vulnerable-source",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.VICIOUS": {
+      "id": "CARD.VICIOUS",
+      "name": "Vicious",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "power",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.WHIRLWIND": {
+      "id": "CARD.WHIRLWIND",
+      "name": "Whirlwind",
+      "character": "Ironclad",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack"
+      ]
+    },
+    "CARD.ALCHEMIZE": {
+      "id": "CARD.ALCHEMIZE",
+      "name": "Alchemize",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "potion",
+        "skill",
+        "value"
+      ]
+    },
+    "CARD.ANOINTED": {
+      "id": "CARD.ANOINTED",
+      "name": "Anointed",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "blessing",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.AUTOMATION": {
+      "id": "CARD.AUTOMATION",
+      "name": "Automation",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.BEACON_OF_HOPE": {
+      "id": "CARD.BEACON_OF_HOPE",
+      "name": "BeaconOfHope",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "heal",
+        "power",
+        "skill"
+      ]
+    },
+    "CARD.BEAT_DOWN": {
+      "id": "CARD.BEAT_DOWN",
+      "name": "BeatDown",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.BELIEVE_IN_YOU": {
+      "id": "CARD.BELIEVE_IN_YOU",
+      "name": "BelieveInYou",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "skill",
+        "support"
+      ]
+    },
+    "CARD.BOLAS": {
+      "id": "CARD.BOLAS",
+      "name": "Bolas",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "attack",
+        "control"
+      ]
+    },
+    "CARD.CALAMITY": {
+      "id": "CARD.CALAMITY",
+      "name": "Calamity",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "burst",
+        "power"
+      ]
+    },
+    "CARD.CATASTROPHE": {
+      "id": "CARD.CATASTROPHE",
+      "name": "Catastrophe",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "heavy",
+        "skill"
+      ]
+    },
+    "CARD.COORDINATE": {
+      "id": "CARD.COORDINATE",
+      "name": "Coordinate",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "support"
+      ]
+    },
+    "CARD.DARK_SHACKLES": {
+      "id": "CARD.DARK_SHACKLES",
+      "name": "DarkShackles",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "control",
+        "skill",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.DISCOVERY": {
+      "id": "CARD.DISCOVERY",
+      "name": "Discovery",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "skill",
+        "tempo",
+        "value"
+      ]
+    },
+    "CARD.DRAMATIC_ENTRANCE": {
+      "id": "CARD.DRAMATIC_ENTRANCE",
+      "name": "DramaticEntrance",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 95.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.ENTROPY": {
+      "id": "CARD.ENTROPY",
+      "name": "Entropy",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.EQUILIBRIUM": {
+      "id": "CARD.EQUILIBRIUM",
+      "name": "Equilibrium",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "retain",
+        "skill"
+      ]
+    },
+    "CARD.ETERNAL_ARMOR": {
+      "id": "CARD.ETERNAL_ARMOR",
+      "name": "EternalArmor",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power"
+      ]
+    },
+    "CARD.FASTEN": {
+      "id": "CARD.FASTEN",
+      "name": "Fasten",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "power",
+        "retain"
+      ]
+    },
+    "CARD.FINESSE": {
+      "id": "CARD.FINESSE",
+      "name": "Finesse",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "dexterity",
+        "skill"
+      ]
+    },
+    "CARD.FISTICUFFS": {
+      "id": "CARD.FISTICUFFS",
+      "name": "Fisticuffs",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.FLASH_OF_STEEL": {
+      "id": "CARD.FLASH_OF_STEEL",
+      "name": "FlashOfSteel",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.GANG_UP": {
+      "id": "CARD.GANG_UP",
+      "name": "GangUp",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "shiv",
+        "tempo"
+      ]
+    },
+    "CARD.GOLD_AXE": {
+      "id": "CARD.GOLD_AXE",
+      "name": "GoldAxe",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "attack",
+        "gold"
+      ]
+    },
+    "CARD.HAND_OF_GREED": {
+      "id": "CARD.HAND_OF_GREED",
+      "name": "HandOfGreed",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "attack",
+        "gold"
+      ]
+    },
+    "CARD.HIDDEN_GEM": {
+      "id": "CARD.HIDDEN_GEM",
+      "name": "HiddenGem",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "skill",
+        "tempo",
+        "value"
+      ]
+    },
+    "CARD.HUDDLE_UP": {
+      "id": "CARD.HUDDLE_UP",
+      "name": "HuddleUp",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "defense",
+        "skill"
+      ]
+    },
+    "CARD.IMPATIENCE": {
+      "id": "CARD.IMPATIENCE",
+      "name": "Impatience",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.INTERCEPT": {
+      "id": "CARD.INTERCEPT",
+      "name": "Intercept",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "defense",
+        "skill"
+      ]
+    },
+    "CARD.JACK_OF_ALL_TRADES": {
+      "id": "CARD.JACK_OF_ALL_TRADES",
+      "name": "JackOfAllTrades",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "duplicate",
+        "skill",
+        "value"
+      ]
+    },
+    "CARD.JACKPOT": {
+      "id": "CARD.JACKPOT",
+      "name": "Jackpot",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "energy",
+        "energy-engine",
+        "gold"
+      ]
+    },
+    "CARD.KNOCKDOWN": {
+      "id": "CARD.KNOCKDOWN",
+      "name": "Knockdown",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "stun"
+      ]
+    },
+    "CARD.LIFT": {
+      "id": "CARD.LIFT",
+      "name": "Lift",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "skill",
+        "strength",
+        "strength-scaling",
+        "tempo"
+      ]
+    },
+    "CARD.MASTER_OF_STRATEGY": {
+      "id": "CARD.MASTER_OF_STRATEGY",
+      "name": "MasterOfStrategy",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.MAYHEM": {
+      "id": "CARD.MAYHEM",
+      "name": "Mayhem",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "exhaust",
+        "exhaust-fuel",
+        "power",
+        "tempo"
+      ]
+    },
+    "CARD.MIMIC": {
+      "id": "CARD.MIMIC",
+      "name": "Mimic",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "duplicate",
+        "skill",
+        "value"
+      ]
+    },
+    "CARD.MIND_BLAST": {
+      "id": "CARD.MIND_BLAST",
+      "name": "MindBlast",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "burst"
+      ]
+    },
+    "CARD.NOSTALGIA": {
+      "id": "CARD.NOSTALGIA",
+      "name": "Nostalgia",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 99.0,
+      "tags": [
+        "power",
+        "retain",
+        "value"
+      ]
+    },
+    "CARD.OMNISLICE": {
+      "id": "CARD.OMNISLICE",
+      "name": "Omnislice",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "shiv"
+      ]
+    },
+    "CARD.PANACHE": {
+      "id": "CARD.PANACHE",
+      "name": "Panache",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 90.0,
+      "tags": [
+        "power",
+        "tempo"
+      ]
+    },
+    "CARD.PANIC_BUTTON": {
+      "id": "CARD.PANIC_BUTTON",
+      "name": "PanicButton",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.PREP_TIME": {
+      "id": "CARD.PREP_TIME",
+      "name": "PrepTime",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "power",
+        "tempo"
+      ]
+    },
+    "CARD.PRODUCTION": {
+      "id": "CARD.PRODUCTION",
+      "name": "Production",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "scaling",
+        "scaling-engine",
+        "skill",
+        "value"
+      ]
+    },
+    "CARD.PROLONG": {
+      "id": "CARD.PROLONG",
+      "name": "Prolong",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "heal",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.PROWESS": {
+      "id": "CARD.PROWESS",
+      "name": "Prowess",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "power",
+        "scaling",
+        "scaling-engine",
+        "strength",
+        "strength-scaling"
+      ]
+    },
+    "CARD.PURITY": {
+      "id": "CARD.PURITY",
+      "name": "Purity",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "control",
+        "exhaust",
+        "exhaust-fuel",
+        "skill"
+      ]
+    },
+    "CARD.RALLY": {
+      "id": "CARD.RALLY",
+      "name": "Rally",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "energy",
+        "energy-engine",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.REND": {
+      "id": "CARD.REND",
+      "name": "Rend",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "attack",
+        "burst",
+        "exhaust",
+        "exhaust-fuel"
+      ]
+    },
+    "CARD.RESTLESSNESS": {
+      "id": "CARD.RESTLESSNESS",
+      "name": "Restlessness",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.ROLLING_BOULDER": {
+      "id": "CARD.ROLLING_BOULDER",
+      "name": "RollingBoulder",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 93.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "heavy",
+        "power"
+      ]
+    },
+    "CARD.SALVO": {
+      "id": "CARD.SALVO",
+      "name": "Salvo",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "burst"
+      ]
+    },
+    "CARD.SCRAWL": {
+      "id": "CARD.SCRAWL",
+      "name": "Scrawl",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "card-draw-engine",
+        "consistency",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.SECRET_TECHNIQUE": {
+      "id": "CARD.SECRET_TECHNIQUE",
+      "name": "SecretTechnique",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "skill",
+        "tempo",
+        "tutor"
+      ]
+    },
+    "CARD.SECRET_WEAPON": {
+      "id": "CARD.SECRET_WEAPON",
+      "name": "SecretWeapon",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "skill",
+        "tempo",
+        "weapon"
+      ]
+    },
+    "CARD.SEEKER_STRIKE": {
+      "id": "CARD.SEEKER_STRIKE",
+      "name": "SeekerStrike",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "tutor"
+      ]
+    },
+    "CARD.SHOCKWAVE": {
+      "id": "CARD.SHOCKWAVE",
+      "name": "Shockwave",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "debuff",
+        "skill",
+        "vulnerable-source"
+      ]
+    },
+    "CARD.SPLASH": {
+      "id": "CARD.SPLASH",
+      "name": "Splash",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.STRATAGEM": {
+      "id": "CARD.STRATAGEM",
+      "name": "Stratagem",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "card-draw-engine",
+        "consistency",
+        "draw",
+        "power"
+      ]
+    },
+    "CARD.TAG_TEAM": {
+      "id": "CARD.TAG_TEAM",
+      "name": "TagTeam",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "attack",
+        "support",
+        "tempo"
+      ]
+    },
+    "CARD.THE_BALL": {
+      "id": "CARD.THE_BALL",
+      "name": "TheBall",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "orb",
+        "summon"
+      ]
+    },
+    "CARD.THE_BOMB": {
+      "id": "CARD.THE_BOMB",
+      "name": "TheBomb",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "delay",
+        "skill"
+      ]
+    },
+    "CARD.THE_GAMBIT": {
+      "id": "CARD.THE_GAMBIT",
+      "name": "TheGambit",
+      "character": "Colorless",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "skill",
+        "tempo",
+        "value"
+      ]
+    },
+    "CARD.THINKING_AHEAD": {
+      "id": "CARD.THINKING_AHEAD",
+      "name": "ThinkingAhead",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.THRUMMING_HATCHET": {
+      "id": "CARD.THRUMMING_HATCHET",
+      "name": "ThrummingHatchet",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "energy",
+        "energy-engine"
+      ]
+    },
+    "CARD.ULTIMATE_DEFEND": {
+      "id": "CARD.ULTIMATE_DEFEND",
+      "name": "UltimateDefend",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill"
+      ]
+    },
+    "CARD.ULTIMATE_STRIKE": {
+      "id": "CARD.ULTIMATE_STRIKE",
+      "name": "UltimateStrike",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 83.0,
+      "tags": [
+        "attack",
+        "heavy"
+      ]
+    },
+    "CARD.VOLLEY": {
+      "id": "CARD.VOLLEY",
+      "name": "Volley",
+      "character": "Colorless",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "attack",
+        "burst"
+      ]
+    },
+    "CARD.CALTROPS": {
+      "id": "CARD.CALTROPS",
+      "name": "Caltrops",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 73.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "passive",
+        "power",
+        "thorns"
+      ]
+    },
+    "CARD.CLASH": {
+      "id": "CARD.CLASH",
+      "name": "Clash",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 70.0,
+      "tags": [
+        "attack",
+        "tempo"
+      ]
+    },
+    "CARD.DISTRACTION": {
+      "id": "CARD.DISTRACTION",
+      "name": "Distraction",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 68.0,
+      "tags": [
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.DUAL_WIELD": {
+      "id": "CARD.DUAL_WIELD",
+      "name": "DualWield",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 68.0,
+      "tags": [
+        "duplicate",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.ENTRENCH": {
+      "id": "CARD.ENTRENCH",
+      "name": "Entrench",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 65.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.HELLO_WORLD": {
+      "id": "CARD.HELLO_WORLD",
+      "name": "HelloWorld",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 73.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "duplicate",
+        "power"
+      ]
+    },
+    "CARD.OUTMANEUVER": {
+      "id": "CARD.OUTMANEUVER",
+      "name": "Outmaneuver",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 68.0,
+      "tags": [
+        "energy",
+        "energy-engine",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.REBOUND": {
+      "id": "CARD.REBOUND",
+      "name": "Rebound",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 68.0,
+      "tags": [
+        "attack",
+        "block",
+        "block-scaling",
+        "retrieve"
+      ]
+    },
+    "CARD.RIP_AND_TEAR": {
+      "id": "CARD.RIP_AND_TEAR",
+      "name": "RipAndTear",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 68.0,
+      "tags": [
+        "attack",
+        "burst"
+      ]
+    },
+    "CARD.STACK": {
+      "id": "CARD.STACK",
+      "name": "Stack",
+      "character": "Colorless",
+      "rarity": "Event",
+      "score": 68.0,
+      "tags": [
+        "retain",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.NEUTRALIZE": {
+      "id": "CARD.NEUTRALIZE",
+      "name": "Neutralize",
+      "character": "Silent",
+      "rarity": "Basic",
+      "score": 55.0,
+      "tags": [
+        "attack",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.SURVIVOR": {
+      "id": "CARD.SURVIVOR",
+      "name": "Survivor",
+      "character": "Silent",
+      "rarity": "Basic",
+      "score": 50.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "discard",
+        "skill"
+      ]
+    },
+    "CARD.ACROBATICS": {
+      "id": "CARD.ACROBATICS",
+      "name": "Acrobatics",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 78.0,
+      "tags": [
+        "card-draw-engine",
+        "discard",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.BACKFLIP": {
+      "id": "CARD.BACKFLIP",
+      "name": "Backflip",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 76.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "card-draw-engine",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.DAGGER_THROW": {
+      "id": "CARD.DAGGER_THROW",
+      "name": "Dagger Throw",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "discard",
+        "draw"
+      ]
+    },
+    "CARD.POISONED_STAB": {
+      "id": "CARD.POISONED_STAB",
+      "name": "Poisoned Stab",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 66.0,
+      "tags": [
+        "attack",
+        "poison",
+        "poison-engine"
+      ]
+    },
+    "CARD.BLADE_DANCE": {
+      "id": "CARD.BLADE_DANCE",
+      "name": "Blade Dance",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 82.0,
+      "tags": [
+        "shiv",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.DEFLECT": {
+      "id": "CARD.DEFLECT",
+      "name": "Deflect",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.DEADLY_POISON": {
+      "id": "CARD.DEADLY_POISON",
+      "name": "Deadly Poison",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "poison",
+        "poison-engine",
+        "skill"
+      ]
+    },
+    "CARD.PIERCING_WAIL": {
+      "id": "CARD.PIERCING_WAIL",
+      "name": "Piercing Wail",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 80.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "defense",
+        "skill"
+      ]
+    },
+    "CARD.QUICK_SLASH": {
+      "id": "CARD.QUICK_SLASH",
+      "name": "Quick Slash",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.SUCKER_PUNCH": {
+      "id": "CARD.SUCKER_PUNCH",
+      "name": "Sucker Punch",
+      "character": "Silent",
+      "rarity": "Common",
+      "score": 66.0,
+      "tags": [
+        "attack",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.FOOTWORK": {
+      "id": "CARD.FOOTWORK",
+      "name": "Footwork",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "dexterity",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.NOXIOUS_FUMES": {
+      "id": "CARD.NOXIOUS_FUMES",
+      "name": "Noxious Fumes",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 85.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "poison",
+        "poison-engine",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.WELL_LAID_PLANS": {
+      "id": "CARD.WELL_LAID_PLANS",
+      "name": "Well-Laid Plans",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 86.0,
+      "tags": [
+        "consistency",
+        "power",
+        "retain"
+      ]
+    },
+    "CARD.LEG_SWEEP": {
+      "id": "CARD.LEG_SWEEP",
+      "name": "Leg Sweep",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 82.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.BOUNCING_FLASK": {
+      "id": "CARD.BOUNCING_FLASK",
+      "name": "Bouncing Flask",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 78.0,
+      "tags": [
+        "poison",
+        "poison-engine",
+        "skill"
+      ]
+    },
+    "CARD.CRIPPLING_CLOUD": {
+      "id": "CARD.CRIPPLING_CLOUD",
+      "name": "Crippling Cloud",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 84.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "poison",
+        "poison-engine",
+        "skill",
+        "vulnerable-source",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.CATALYST": {
+      "id": "CARD.CATALYST",
+      "name": "Catalyst",
+      "character": "Silent",
+      "rarity": "Uncommon",
+      "score": 90.0,
+      "tags": [
+        "burst",
+        "poison",
+        "poison-engine",
+        "scaling",
+        "scaling-engine",
+        "skill"
+      ]
+    },
+    "CARD.CORPSE_EXPLOSION": {
+      "id": "CARD.CORPSE_EXPLOSION",
+      "name": "Corpse Explosion",
+      "character": "Silent",
+      "rarity": "Rare",
+      "score": 95.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "burst",
+        "poison",
+        "poison-engine",
+        "skill"
+      ]
+    },
+    "CARD.ADRENALINE": {
+      "id": "CARD.ADRENALINE",
+      "name": "Adrenaline",
+      "character": "Silent",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "energy",
+        "energy-engine",
+        "skill",
+        "tempo"
+      ]
+    },
+    "CARD.AFTERIMAGE": {
+      "id": "CARD.AFTERIMAGE",
+      "name": "Afterimage",
+      "character": "Silent",
+      "rarity": "Rare",
+      "score": 92.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "passive",
+        "power"
+      ]
+    },
+    "CARD.WRAITH_FORM": {
+      "id": "CARD.WRAITH_FORM",
+      "name": "Wraith Form",
+      "character": "Silent",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "defense",
+        "intangible",
+        "power"
+      ]
+    },
+    "CARD.MALAISE": {
+      "id": "CARD.MALAISE",
+      "name": "Malaise",
+      "character": "Silent",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "skill",
+        "strength_down",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.ZAP": {
+      "id": "CARD.ZAP",
+      "name": "Zap",
+      "character": "Defect",
+      "rarity": "Basic",
+      "score": 50.0,
+      "tags": [
+        "lightning",
+        "lightning-engine",
+        "orb",
+        "skill"
+      ]
+    },
+    "CARD.DUALCAST": {
+      "id": "CARD.DUALCAST",
+      "name": "Dualcast",
+      "character": "Defect",
+      "rarity": "Basic",
+      "score": 50.0,
+      "tags": [
+        "evoke",
+        "orb",
+        "skill"
+      ]
+    },
+    "CARD.BALL_LIGHTNING": {
+      "id": "CARD.BALL_LIGHTNING",
+      "name": "Ball Lightning",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 74.0,
+      "tags": [
+        "attack",
+        "lightning",
+        "lightning-engine",
+        "orb"
+      ]
+    },
+    "CARD.COLD_SNAP": {
+      "id": "CARD.COLD_SNAP",
+      "name": "Cold Snap",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 76.0,
+      "tags": [
+        "attack",
+        "frost",
+        "frost-engine",
+        "orb"
+      ]
+    },
+    "CARD.COMPILE_DRIVER": {
+      "id": "CARD.COMPILE_DRIVER",
+      "name": "Compile Driver",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 74.0,
+      "tags": [
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.CONSERVE_BATTERY": {
+      "id": "CARD.CONSERVE_BATTERY",
+      "name": "Conserve Battery",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 72.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "energy",
+        "energy-engine",
+        "skill"
+      ]
+    },
+    "CARD.COOLHEADED": {
+      "id": "CARD.COOLHEADED",
+      "name": "Coolheaded",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 82.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "frost",
+        "frost-engine",
+        "orb",
+        "skill"
+      ]
+    },
+    "CARD.HOLOGRAM": {
+      "id": "CARD.HOLOGRAM",
+      "name": "Hologram",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 76.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "retrieve",
+        "skill"
+      ]
+    },
+    "CARD.LEAP": {
+      "id": "CARD.LEAP",
+      "name": "Leap",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill"
+      ]
+    },
+    "CARD.SWEEPING_BEAM": {
+      "id": "CARD.SWEEPING_BEAM",
+      "name": "Sweeping Beam",
+      "character": "Defect",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "card-draw-engine",
+        "draw"
+      ]
+    },
+    "CARD.DEFRAGMENT": {
+      "id": "CARD.DEFRAGMENT",
+      "name": "Defragment",
+      "character": "Defect",
+      "rarity": "Uncommon",
+      "score": 92.0,
+      "tags": [
+        "focus",
+        "focus-scaling",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.BIASED_COGNITION": {
+      "id": "CARD.BIASED_COGNITION",
+      "name": "Biased Cognition",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 95.0,
+      "tags": [
+        "burst",
+        "focus",
+        "focus-scaling",
+        "power"
+      ]
+    },
+    "CARD.ELECTRODYNAMICS": {
+      "id": "CARD.ELECTRODYNAMICS",
+      "name": "Electrodynamics",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "lightning",
+        "lightning-engine",
+        "power"
+      ]
+    },
+    "CARD.ECHO_FORM": {
+      "id": "CARD.ECHO_FORM",
+      "name": "Echo Form",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 94.0,
+      "tags": [
+        "duplicate",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.GLACIER": {
+      "id": "CARD.GLACIER",
+      "name": "Glacier",
+      "character": "Defect",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "frost",
+        "frost-engine",
+        "orb",
+        "skill"
+      ]
+    },
+    "CARD.SEEK": {
+      "id": "CARD.SEEK",
+      "name": "Seek",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 98.0,
+      "tags": [
+        "consistency",
+        "skill",
+        "tutor"
+      ]
+    },
+    "CARD.REBOOT": {
+      "id": "CARD.REBOOT",
+      "name": "Reboot",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 86.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "reset",
+        "skill"
+      ]
+    },
+    "CARD.FISSION": {
+      "id": "CARD.FISSION",
+      "name": "Fission",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 90.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "energy",
+        "energy-engine",
+        "evoke",
+        "skill"
+      ]
+    },
+    "CARD.ALL_FOR_ONE": {
+      "id": "CARD.ALL_FOR_ONE",
+      "name": "All For One",
+      "character": "Defect",
+      "rarity": "Rare",
+      "score": 85.0,
+      "tags": [
+        "attack",
+        "burst",
+        "retrieve"
+      ]
+    },
+    "CARD.CAPACITOR": {
+      "id": "CARD.CAPACITOR",
+      "name": "Capacitor",
+      "character": "Defect",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "orb_slot",
+        "power"
+      ]
+    },
+    "CARD.BONE_ARMOR": {
+      "id": "CARD.BONE_ARMOR",
+      "name": "Bone Armor",
+      "character": "Necrobinder",
+      "rarity": "Common",
+      "score": 68.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "skill"
+      ]
+    },
+    "CARD.SOUL_HARVEST": {
+      "id": "CARD.SOUL_HARVEST",
+      "name": "Soul Harvest",
+      "character": "Necrobinder",
+      "rarity": "Common",
+      "score": 75.0,
+      "tags": [
+        "card-draw-engine",
+        "draw",
+        "skill",
+        "soul"
+      ]
+    },
+    "CARD.BANSHEES_CRY": {
+      "id": "CARD.BANSHEES_CRY",
+      "name": "Banshee's Cry",
+      "character": "Necrobinder",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "skill",
+        "weak",
+        "weak-source"
+      ]
+    },
+    "CARD.DARK_PACT": {
+      "id": "CARD.DARK_PACT",
+      "name": "Dark Pact",
+      "character": "Necrobinder",
+      "rarity": "Uncommon",
+      "score": 82.0,
+      "tags": [
+        "energy",
+        "energy-engine",
+        "hp_loss",
+        "skill"
+      ]
+    },
+    "CARD.GRAVE_ROBBER": {
+      "id": "CARD.GRAVE_ROBBER",
+      "name": "Grave Robber",
+      "character": "Necrobinder",
+      "rarity": "Uncommon",
+      "score": 84.0,
+      "tags": [
+        "exhaust",
+        "exhaust-fuel",
+        "retrieve",
+        "skill"
+      ]
+    },
+    "CARD.AFTERLIFE": {
+      "id": "CARD.AFTERLIFE",
+      "name": "Afterlife",
+      "character": "Necrobinder",
+      "rarity": "Uncommon",
+      "score": 88.0,
+      "tags": [
+        "power",
+        "revive",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.LICH_FORM": {
+      "id": "CARD.LICH_FORM",
+      "name": "Lich Form",
+      "character": "Necrobinder",
+      "rarity": "Rare",
+      "score": 94.0,
+      "tags": [
+        "invulnerable",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.DEATH_KNELL": {
+      "id": "CARD.DEATH_KNELL",
+      "name": "Death Knell",
+      "character": "Necrobinder",
+      "rarity": "Rare",
+      "score": 92.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "execute"
+      ]
+    },
+    "CARD.UNHOLY_BURST": {
+      "id": "CARD.UNHOLY_BURST",
+      "name": "Unholy Burst",
+      "character": "Necrobinder",
+      "rarity": "Rare",
+      "score": 90.0,
+      "tags": [
+        "burst",
+        "energy",
+        "energy-engine",
+        "skill"
+      ]
+    },
+    "CARD.IMPERIAL_STRIKE": {
+      "id": "CARD.IMPERIAL_STRIKE",
+      "name": "Imperial Strike",
+      "character": "Regent",
+      "rarity": "Common",
+      "score": 66.0,
+      "tags": [
+        "attack",
+        "tempo"
+      ]
+    },
+    "CARD.REGAL_ARMOR": {
+      "id": "CARD.REGAL_ARMOR",
+      "name": "Regal Armor",
+      "character": "Regent",
+      "rarity": "Common",
+      "score": 70.0,
+      "tags": [
+        "block",
+        "block-scaling",
+        "counter",
+        "skill"
+      ]
+    },
+    "CARD.EDICT": {
+      "id": "CARD.EDICT",
+      "name": "Edict",
+      "character": "Regent",
+      "rarity": "Common",
+      "score": 74.0,
+      "tags": [
+        "card-draw-engine",
+        "command",
+        "draw",
+        "skill"
+      ]
+    },
+    "CARD.ARSENAL": {
+      "id": "CARD.ARSENAL",
+      "name": "Arsenal",
+      "character": "Regent",
+      "rarity": "Uncommon",
+      "score": 82.0,
+      "tags": [
+        "power",
+        "tempo",
+        "weapon"
+      ]
+    },
+    "CARD.ASTRAL_PULSE": {
+      "id": "CARD.ASTRAL_PULSE",
+      "name": "Astral Pulse",
+      "character": "Regent",
+      "rarity": "Uncommon",
+      "score": 80.0,
+      "tags": [
+        "aoe",
+        "aoe-source",
+        "attack",
+        "mana"
+      ]
+    },
+    "CARD.SOVEREIGN_WILL": {
+      "id": "CARD.SOVEREIGN_WILL",
+      "name": "Sovereign Will",
+      "character": "Regent",
+      "rarity": "Rare",
+      "score": 94.0,
+      "tags": [
+        "control",
+        "skill",
+        "stun"
+      ]
+    },
+    "CARD.KINGMAKER": {
+      "id": "CARD.KINGMAKER",
+      "name": "Kingmaker",
+      "character": "Regent",
+      "rarity": "Rare",
+      "score": 96.0,
+      "tags": [
+        "ascendance",
+        "power",
+        "scaling",
+        "scaling-engine"
+      ]
+    },
+    "CARD.DIVINE_INTERVENTION": {
+      "id": "CARD.DIVINE_INTERVENTION",
+      "name": "Divine Intervention",
+      "character": "Regent",
+      "rarity": "Rare",
+      "score": 92.0,
+      "tags": [
+        "heal",
+        "save",
+        "skill"
+      ]
+    },
+    "CARD.SCEPTER_BEAM": {
+      "id": "CARD.SCEPTER_BEAM",
+      "name": "Scepter Beam",
+      "character": "Regent",
+      "rarity": "Rare",
+      "score": 88.0,
+      "tags": [
+        "attack",
+        "burst",
+        "heavy"
+      ]
+    }
+  }
+}

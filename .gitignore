@@ -1,0 +1,39 @@
+# game files (copyrighted)
+*.exe
+*.pck
+sts2.dll
+data_sts2_windows_x86_64/
+fmod*.dll
+libGodot*.dll
+libspine*.dll
+libsentry*.dll
+crashpad*
+# other people's mods
+CombatSolver*/
+SpireStrategist*/
+STS2-RitsuLib*/
+*.zip
+# build output / temp
+*.dll
+*.bak
+*.bak*
+*.il
+*.pyc
+__pycache__/
+bin/
+obj/
+.vs/
+**/decomp/
+*-backup-*/
+reward-probe-backups/
+test-profiles/
+reward-test-*/
+# saves / logs / personal
+*.save
+*.log
+*.png
+*.jpg
+.env
+.claude/
+.agents/
+.gemini/

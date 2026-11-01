@@ -1,0 +1,16 @@
+{
+  "id": "AiTeammate",
+  "name": "智能人机队友",
+  "author": "Antigravity",
+  "description": "为多角色冒险的 2P 注入高智能后台自主打牌、斩杀、保命叠甲与智能选牌决策大脑。",
+  "version": "1.0.0",
+  "has_pck": false,
+  "has_dll": true,
+  "affects_gameplay": true,
+  "min_game_version": "0.111.0",
+  "dependencies": [
+    {
+      "id": "DualRoleAdventure"
+    }
+  ]
+}
