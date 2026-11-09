@@ -15,6 +15,7 @@ STS2-RitsuLib*/
 *.zip
 # build output / temp
 *.dll
+!mod/AiTeammate.dll
 *.bak
 *.bak*
 *.il
@@ -38,3 +39,5 @@ reward-test-*/
 .agents/
 .gemini/
 push.bat
+
+scratch/

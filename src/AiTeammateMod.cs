@@ -1,42 +1,28 @@
 using System;
-
 using System.Collections;
-
 using System.Collections.Generic;
-
+using System.Linq;
 using System.Reflection;
-
+using System.Runtime.InteropServices;
 using System.Threading;
-
 using System.Threading.Tasks;
-
 using HarmonyLib;
-
 using Godot;
-
 using MegaCrit.Sts2.Core.Combat;
-
 using MegaCrit.Sts2.Core.Commands;
-
 using MegaCrit.Sts2.Core.Context;
-
 using MegaCrit.Sts2.Core.Entities.Cards;
-
 using MegaCrit.Sts2.Core.Entities.Creatures;
-
 using MegaCrit.Sts2.Core.Entities.Players;
-
 using MegaCrit.Sts2.Core.Entities.UI;
-
 using MegaCrit.Sts2.Core.Models;
-
 using MegaCrit.Sts2.Core.Modding;
-
 using MegaCrit.Sts2.Core.GameActions;
-
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
-
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.Potions;
+using MegaCrit.Sts2.Core.Nodes.Rewards;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Relics;
 using MegaCrit.Sts2.Core.Entities.Potions;
@@ -68,6 +54,7 @@ using MegaCrit.Sts2.Core.Nodes.RestSite;
 using System.Text.RegularExpressions;
 
 using MegaCrit.Sts2.Core.Nodes.Events;
+using MegaCrit.Sts2.Core.Nodes.Rewards;
 
 using MegaCrit.Sts2.Core.Events;
 
@@ -146,6 +133,22 @@ namespace AiTeammate
         public static object[] CachedDeployArgs = null;
 
         public static object CachedDeployResult = null;
+
+        public static MethodInfo CachedDeployMethod = null;
+
+        public static string CachedDeployMethodName = null;
+
+        public static int CachedDeployParamCount = 0;
+
+        public static string[] CachedDeployParamTypes = null;
+
+        public static string CachedDeploySource = null;
+
+        public static int CachedDeployTurn = -1;
+
+        public static MethodInfo StartDeploymentMethod = null;
+
+        public static MethodInfo StartFullAutoDeploymentMethod = null;
 
         public static DateTime LastProcessCheckTime = DateTime.MinValue;
 
@@ -301,6 +304,56 @@ namespace AiTeammate
 
         public static int P2PlayedCardsThisTurn = 0;
         public static int P2PlanLengthThisTurn = -1;
+        public static int P2PlannedCardActionsThisTurn = 0;
+        public static int P2EnqueuedCardActionsThisTurn = 0;
+        public static int P2ExecutedCardActionsThisTurn = 0;
+        public static int P2EndTurnGatedCountThisTurn = 0;
+        // Directive #5.87: StartDeployment() cleans up the previous session by calling
+        // CancelDeployment()/CompleteDeployment() *before* it invokes DeployCurrentTurn. That internal
+        // cleanup must not be mistaken for a finished deployment (it produced a bogus plan-empty and
+        // cancelled the deployment that was just starting).
+        public static bool IsStartingDeployment = false;
+        public static DateTime StartDeploymentEnteredAt = DateTime.MinValue;
+        public static bool HasEnteredDeployCurrentTurnThisSession = false;
+        // Directive #5.47 / #5.47-HF1: Dedicated P2 Potion Continuation State (independent from PendingNativeChoiceContinuation)
+        public static bool PendingPotionContinuation = false;
+        public static bool PotionContinuationScheduled = false;
+        public static int PotionContinuationRetryCount = 0;
+        public const int MaxPotionContinuationRetries = 20;
+        public const double MaxPotionContinuationSeconds = 2.0;
+        private static DateTime _lastPotionAttemptTime = DateTime.MinValue;
+        private static DateTime _lastPotionDeferredLogTime = DateTime.MinValue;
+        public static string ActivePotionId = null;
+        public static string ActivePotionResolvedCard = null;
+        public static string LastPotionContinuationMarker = null;
+        public static int PotionContinuationTurn = 0;
+        public static DateTime PotionContinuationRequestTime = DateTime.MinValue;
+        public static bool HasTriggeredPotionContinuationThisTurn = false;
+        public static bool PotionContinuationExecutedPlayThisTurn = false;
+        public static bool PotionContinuationDeployedThisTurn = false;
+        public static bool LifelineContinuationAttemptedThisTurn = false;
+        public static bool PlanEmptyRecoveryAttemptedThisTurn = false;
+        public static bool PlanEmptyRecoveryInProgress = false;
+        public static DateTime PlanEmptyRecoveryStartTime = DateTime.MinValue;
+        public static bool PlanEmptyRecalcRequestedThisTurn = false;
+        public static bool PlanEmptyFallbackRequestedThisTurn = false;
+        // Directive #5.91 T3.3: how many cards P2 had already played when the plan-empty recalc was
+        // requested. "The recalc produced nothing" means P2PlayedCardsThisTurn never grew past this.
+        public static int P2PlayedCardsAtRecalcStart = 0;
+        // Directive #5.91 T3.1: hard safety cap for an in-flight plan-empty recalc. Below this the
+        // watchdog must NOT preempt CombatSolver (the 1.2s timeout was the root cause of RC-3).
+        public const double PlanEmptyRecoveryHardCapSeconds = 8.5;
+        // Directive #5.92 T2: a 0-card plan makes CombatSolver enqueue its own EndTurn from *inside*
+        // DeployCurrentTurn (caller=ActionQueueSynchronizer.RequestEnqueue), so at that instant
+        // IsDeploying is still true and the #5.91 T3.3 idle-only continuation guard can never fire.
+        // The gate therefore DEFERS that EndTurn and carries the request across to
+        // CompleteDeploymentPostfix through this flag (one-shot, burned on first use).
+        public static bool P2PendingPostDeployContinuation = false;
+        public static DateTime P2PendingPostDeployContinuationSince = DateTime.MinValue;
+        public static int P2PendingPostDeployContinuationTurn = -1;
+        public const double P2PostDeployContinuationTimeoutSeconds = 5.0;
+        public static bool P2PostFallbackGreedyContinuationUsedThisTurn = false;
+        public static bool P2SuspectTruncatedAfterOneCardThisTurn = false;
         public static string P2SearchStatusThisTurn = "unknown";
         public static long P2SearchNodesThisTurn = -1;
         public static bool P2PlanHasAttackThisTurn = false;
@@ -310,6 +363,10 @@ namespace AiTeammate
         public static bool P2FallbackGreedyUsedThisTurn = false;
         public static bool IsEnqueuingFallbackBatch = false;
         public static string P2TurnEndReason = "normal";
+        // Directive #5.88: re-entrancy depth of CheckP2EndTurnGate. The gate can legally be
+        // re-entered through a fallback/end-turn enqueue, but unbounded re-entry used to blow the
+        // stack and kill the process; depth is used only as a fail-open backstop.
+        public static int EndTurnGateDepth = 0;
 
         public static int P2SummaryLoggedTurn = -1;
 
@@ -327,6 +384,124 @@ namespace AiTeammate
         public static bool P2SummaryFinalizedThisTurn = false;
         public static bool P2FallbackActionPendingThisTurn = false;
         public static bool P2FallbackActionEnqueuedThisTurn = false;
+
+        // Directive #5.55: EndTurn Idempotency and Controlled Single Retry State
+        public static int CombatGeneration = 0;
+        public static readonly HashSet<string> P2EndTurnEnqueuedKeys = new HashSet<string>();
+        public static int P2EndTurnEnqueuedCountThisTurn = 0;
+        public static int P2EndTurnRetryCountThisTurn = 0;
+        public static bool P2EndTurnFailedOpenThisTurn = false;
+
+        // Directive #5.57: Decoupled Turn Transition & Diagnostic State
+        public static volatile bool P1RestorePendingForPhaseAdvance = false;
+
+        public static string GetCurrentCombatPhaseString()
+        {
+            try
+            {
+                var cm = CombatManager.Instance;
+                var cs = cm != null ? cm.DebugOnlyGetState() : null;
+                if (cs == null) return "null-state";
+                object phase = GetMemberValue(cs, "CombatPhase") ?? GetMemberValue(cs, "Phase") ?? GetMemberValue(cm, "Phase");
+                return phase != null ? phase.ToString() : "unknown";
+            }
+            catch { return "unknown"; }
+        }
+
+        public static bool GetPlayerReadyToEndTurn(Player p)
+        {
+            try
+            {
+                var cm = CombatManager.Instance;
+                return cm != null && p != null && cm.IsPlayerReadyToEndTurn(p);
+            }
+            catch { return false; }
+        }
+
+        // Directive #5.86 (Task 1B): true once P2's own turn is over (confirmed or the native ready
+        // flag flipped). The end-turn audit must not keep advertising solverRecalculating=True after
+        // P2 has already ended its turn; RecalcRequestedThisTurn is a per-turn latch, not a live signal.
+        public static bool IsP2TurnSettled()
+        {
+            try
+            {
+                if (P2EndTurnConfirmedThisTurn) return true;
+                Player p2 = FlowCoordinator.GetPlayer2();
+                if (p2 == null) return false;
+                return GetPlayerReadyToEndTurn(p2);
+            }
+            catch { return false; }
+        }
+
+        public static void ExecuteFixedP1UiRestore(string phase, string source)
+        {
+            try
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] fixed-p1-ui-restore phase={0} source={1}", phase ?? "unknown", source ?? "unknown"));
+                TurnFlowPatches.RestorePlayer1ControlIfActive("wakuu-p1-restore-fixed:" + source, true);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] ExecuteFixedP1UiRestore error: " + ex);
+            }
+        }
+
+        // Directive #5.54: Terminal GameOver & Both Players Dead state
+        public static volatile bool IsTerminalCombatFinalized = false;
+        private static bool HasLoggedTerminalCombatFinalized = false;
+
+        public static void LogTerminalCombatFinalized(string reason)
+        {
+            IsTerminalCombatFinalized = true;
+            if (!HasLoggedTerminalCombatFinalized)
+            {
+                HasLoggedTerminalCombatFinalized = true;
+                GD.Print(string.Format("[AiTeammate][Coord] terminal-combat-finalized reason={0}", reason ?? "all-players-dead"));
+            }
+        }
+
+        public static bool AreAllPlayersDead(out bool p1Dead, out bool p2Dead)
+        {
+            p1Dead = false;
+            p2Dead = false;
+            try
+            {
+                var cm = CombatManager.Instance;
+                var state = cm != null ? cm.DebugOnlyGetState() : null;
+                Player p1 = null;
+                Player p2 = null;
+
+                if (state != null && state.Players != null)
+                {
+                    if (state.Players.Count > 0) p1 = state.Players[0];
+                    if (state.Players.Count > 1) p2 = state.Players[state.Players.Count - 1];
+                }
+
+                if (p1 == null) p1 = FlowCoordinator.GetPlayer1();
+                if (p2 == null) p2 = FlowCoordinator.GetPlayer2();
+
+                if (p1 == null && p2 == null)
+                {
+                    return false;
+                }
+
+                p1Dead = (p1 == null || p1.Creature == null || !p1.Creature.IsAlive);
+                p2Dead = (p2 == null || p2.Creature == null || !p2.Creature.IsAlive);
+
+                return p1Dead && p2Dead;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] AreAllPlayersDead exception: " + ex);
+                return false;
+            }
+        }
+
+        public static bool AreAllPlayersDead()
+        {
+            bool p1Dead, p2Dead;
+            return AreAllPlayersDead(out p1Dead, out p2Dead);
+        }
 
         // Directive #5.34: P2 hand & critical section tracking
 
@@ -865,6 +1040,11 @@ namespace AiTeammate
         }
 
         public static bool P2FallbackActionExecutedThisTurn = false;
+        public static int P2PlanEmptyRecalcCountThisTurn = 0;
+        public static bool P2FallbackExecutedThisTurn = false;
+        public static bool P2PostFallbackRecalcAttemptedThisTurn = false;
+        public static bool P2FallbackExhaustedThisTurn = false;
+        public static bool P2PendingEndTurnWakeup = false;
         public static bool P2FallbackEndTurnQueuedThisTurn = false;
         public static bool P2FallbackEndTurnBlockUsedThisTurn = false;
         public static bool P2ZeroActionProtectionFinalizedThisTurn = false;
@@ -892,12 +1072,256 @@ namespace AiTeammate
         // Directive #5.11 H1: Divergence exemption during P2 pending choices
 
         public static int P2PendingChoiceCount = 0;
+        // Directive #5.48 & #5.60: Track P1 pending choices and choice screen by ID
+        public static int P1PendingChoiceCount = 0;
+        public static bool IsP1GatheringChoice = false;
+        public static readonly HashSet<uint> ActiveP1ChoiceIds = new HashSet<uint>();
+        public static readonly object P1ChoiceLock = new object();
+        public static DateTime LastChoiceReservedTime = DateTime.MinValue;
+        public static string LastP1ChoiceCheckLog = null;
+        public static DateTime LastP1ChoiceCheckLogTime = DateTime.MinValue;
+
+        public static void RegisterP1Choice(uint choiceId, string source)
+        {
+            lock (P1ChoiceLock)
+            {
+                ActiveP1ChoiceIds.Add(choiceId);
+                P1PendingChoiceCount = ActiveP1ChoiceIds.Count;
+                IsP1GatheringChoice = ActiveP1ChoiceIds.Count > 0;
+                LastChoiceReservedTime = DateTime.UtcNow;
+            }
+            GD.Print(string.Format("[AiTeammate][Coord] p1-choice-reserved choiceId={0} activeCount={1} source={2}",
+                choiceId, P1PendingChoiceCount, source ?? "unknown"));
+        }
+
+        public static bool ReleaseP1Choice(uint choiceId, string reason)
+        {
+            bool removed = false;
+            int remaining = 0;
+            lock (P1ChoiceLock)
+            {
+                removed = ActiveP1ChoiceIds.Remove(choiceId);
+                P1PendingChoiceCount = ActiveP1ChoiceIds.Count;
+                IsP1GatheringChoice = ActiveP1ChoiceIds.Count > 0;
+                remaining = P1PendingChoiceCount;
+            }
+            if (removed)
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] p1-choice-released choiceId={0} reason={1} remaining={2}",
+                    choiceId, reason ?? "unknown", remaining));
+                if (remaining == 0)
+                {
+                    Callable.From(delegate {
+                        OnPlayer1ChoiceCompletedWakeup();
+                    }).CallDeferred();
+                }
+            }
+            return removed;
+        }
+
+        public static void ClearAllP1Choices(string reason)
+        {
+            int clearedCount = 0;
+            lock (P1ChoiceLock)
+            {
+                clearedCount = ActiveP1ChoiceIds.Count;
+                ActiveP1ChoiceIds.Clear();
+                P1PendingChoiceCount = 0;
+                IsP1GatheringChoice = false;
+            }
+            if (clearedCount > 0)
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] p1-choices-cleared count={0} reason={1}", clearedCount, reason ?? "unknown"));
+                Callable.From(delegate {
+                    OnPlayer1ChoiceCompletedWakeup();
+                }).CallDeferred();
+            }
+        }
+
+        public static bool HasActiveP1ChoiceOverlay(out string screenName)
+        {
+            screenName = "none";
+            try
+            {
+                if (NOverlayStack.Instance != null)
+                {
+                    FieldInfo fOverlays = AccessTools.Field(typeof(NOverlayStack), "_overlays");
+                    IList overlays = fOverlays != null ? fOverlays.GetValue(NOverlayStack.Instance) as IList : null;
+                    if (overlays != null && overlays.Count > 0)
+                    {
+                        ulong p1NetId = GetPlayer1NetId();
+                        ulong p2NetId = GetPlayer2NetId();
+                        for (int i = overlays.Count - 1; i >= 0; i--)
+                        {
+                            object ov = overlays[i];
+                            if (ov == null) continue;
+                            if (ChoiceSuppressionPatches.IsTerminalGameOverScreen(ov)) continue;
+
+                            Player ovOwner = ChoiceSuppressionPatches.ExtractScreenOwner(ov);
+                            if (ovOwner != null)
+                            {
+                                if (ovOwner.NetId == p1NetId || IsPlayer1(ovOwner))
+                                {
+                                    screenName = ov.GetType().Name;
+                                    return true;
+                                }
+                                if (ovOwner.NetId == p2NetId || IsPlayer2(ovOwner))
+                                {
+                                    continue;
+                                }
+                            }
+                            string tName = ov.GetType().Name;
+                            if (tName.IndexOf("Choice", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                tName.IndexOf("CardSelect", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                tName.IndexOf("Reward", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                tName.IndexOf("Choose", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                screenName = tName;
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+        public static MegaCrit.Sts2.Core.GameActions.GameAction CurrentExecutingActionInstance = null;
+        public static bool P2EndTurnConfirmedThisTurn = false;
+        public static ulong LastHandledPotionActionId = 0;
         public static bool ForcedResolveOnLeaveInProgress = false;
         public static DateTime LastForcedResolveOnLeave = DateTime.MinValue;
         public static bool GuardPendingChoicesBeforeLeave(string reason)
         {
             if (ForcedResolveOnLeaveInProgress) return true;
             try { Player p2 = FlowCoordinator.GetPlayer2(); if (p2 == null) return true; bool pending = P2PendingChoiceCount > 0 || FlowCoordinator.HasPendingP2Choice(p2); if (!pending) return true; ForcedResolveOnLeaveInProgress = true; LastForcedResolveOnLeave = DateTime.UtcNow; GD.Print(string.Format("[AiTeammate][Flow] forced-resolve-on-leave begin reason={0} pendingChoice={1}", reason ?? "unknown", P2PendingChoiceCount)); bool resolved = FlowCoordinator.ResolveAllPendingP2Choices("forced-resolve-on-leave:" + (reason ?? "unknown")); if (resolved) P2PendingChoiceCount = 0; GD.Print(string.Format("[AiTeammate][Flow] forced-resolve-on-leave {0} reason={1}", resolved ? "resolved" : "fail-open", reason ?? "unknown")); return true; } catch (Exception ex) { GD.PrintErr("[AiTeammate][Flow] forced-resolve-on-leave exception: " + ex); return true; } finally { ForcedResolveOnLeaveInProgress = false; }
+        }
+
+        // Directive #5.48 & #5.60: Detect if P1 is gathering player choice with live screen, pause, and ID verification
+        public static bool IsPlayer1InChoiceScreen()
+        {
+            bool choiceActive = false;
+            bool p1Ready = false;
+            bool p1Alive = !IsPlayer1Dead();
+            int choiceCount = 0;
+            bool queuePaused = false;
+            string activeIdsStr = "";
+            string screenName = "none";
+
+            try
+            {
+                if (!p1Alive)
+                {
+                    ClearAllP1Choices("p1-dead");
+                    choiceActive = false;
+                }
+                else
+                {
+                    ulong p1Id = GetPlayer1NetId();
+                    if (p1Id != 0 && RunManager.Instance != null && RunManager.Instance.ActionQueueSet != null)
+                    {
+                        queuePaused = RunManager.Instance.ActionQueueSet.ActionQueueIsPaused(p1Id);
+                    }
+
+                    bool hasOverlay = HasActiveP1ChoiceOverlay(out screenName);
+
+                    var cm = CombatManager.Instance;
+                    Player p1 = FlowCoordinator.GetPlayer1();
+                    if (cm != null && p1 != null)
+                    {
+                        p1Ready = cm.IsPlayerReadyToEndTurn(p1);
+                    }
+
+                    uint[] currentIds;
+                    lock (P1ChoiceLock)
+                    {
+                        currentIds = new uint[ActiveP1ChoiceIds.Count];
+                        ActiveP1ChoiceIds.CopyTo(currentIds);
+                        choiceCount = currentIds.Length;
+                    }
+                    string[] strIds = new string[currentIds.Length];
+                    for (int i = 0; i < currentIds.Length; i++) strIds[i] = currentIds[i].ToString();
+                    activeIdsStr = string.Join(",", strIds);
+
+                    bool transientWindow = (DateTime.UtcNow - LastChoiceReservedTime).TotalSeconds < 1.0 && !p1Ready;
+
+                    if (queuePaused || hasOverlay)
+                    {
+                        choiceActive = true;
+                    }
+                    else if (choiceCount > 0 && transientWindow)
+                    {
+                        choiceActive = true;
+                    }
+                    else
+                    {
+                        if (choiceCount > 0)
+                        {
+                            ClearAllP1Choices("stale-no-queue-pause-no-overlay");
+                            choiceCount = 0;
+                            activeIdsStr = "";
+                        }
+                        choiceActive = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] IsPlayer1InChoiceScreen exception: " + ex);
+            }
+
+            string logLine = string.Format(
+                "[AiTeammate][Coord] p1-choice-check choice-active={0} p1-ready={1} p1-alive={2} choiceCount={3} queuePaused={4} activeIds=[{5}] screen={6}",
+                choiceActive, p1Ready, p1Alive, choiceCount, queuePaused, activeIdsStr, screenName);
+
+            var now = DateTime.UtcNow;
+            if (logLine != LastP1ChoiceCheckLog || (now - LastP1ChoiceCheckLogTime).TotalMilliseconds >= 500)
+            {
+                LastP1ChoiceCheckLog = logLine;
+                LastP1ChoiceCheckLogTime = now;
+                GD.Print(logLine);
+            }
+
+            return choiceActive;
+        }
+
+        // Directive #5.48 Priority 2: Wake up P2 once after P1 completes choice
+        public static void OnPlayer1ChoiceCompletedWakeup()
+        {
+            try
+            {
+                if (!IsInCombat() || !IsPlayPhase()) return;
+                Player p2 = FlowCoordinator.GetPlayer2();
+                var cm = CombatManager.Instance;
+                var state = cm != null ? cm.DebugOnlyGetState() : null;
+                if (p2 == null || state == null) return;
+
+                GD.Print("[AiTeammate][Coord] p1-choice-completed-wakeup owner=P2");
+                if (P2PendingEndTurnWakeup)
+                {
+                    P2PendingEndTurnWakeup = false;
+                    GD.Print("[AiTeammate][Coord] p1-choice-completed-wakeup: waking up P2 finish-up flow");
+                    EnqueueP2EndTurn(p2);
+                    return;
+                }
+                bool hasAtk;
+                bool hasCard = P2HasUsableCard(p2, out hasAtk);
+                int energy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+                int queueCount = GetP2QueuePlayCardCount(p2.NetId);
+                if (hasCard && queueCount == 0 && !IsPlayer2ActionInFlight())
+                {
+                    if (!IsSolverSearching() && !IsSolverDeploying() && !IsDeploying)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] p1-choice-completed-wakeup: kicking solver recalculation hand={0} energy={1}",
+                            GetPlayerHandCardCount(p2), energy));
+                        KickSolverRecalculation(state, "p1-choice-completed");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] OnPlayer1ChoiceCompletedWakeup error: " + ex);
+            }
         }
 
         // Pure decision function used by the independent timer and the offline
@@ -1026,7 +1450,16 @@ namespace AiTeammate
 
         private static void IndependentLifelineTimerTick(object _)
         {
+            // Directive #5.92 T3: fires on the in-combat -> out-of-combat edge. Must run BEFORE the
+            // "not in combat" early return below, otherwise the edge is never observed.
+            try { CheckCombatEndedForLogArchive(); } catch { }
             if (!IsInCombat()) { DisarmIndependentP2Lifeline("timer-tick-not-in-combat"); return; }
+            if (AreAllPlayersDead() || IsTerminalCombatFinalized)
+            {
+                DisarmIndependentP2Lifeline("all-players-dead");
+                LogTerminalCombatFinalized("all-players-dead");
+                return;
+            }
             CombatManager cm = null;
             CombatState state = null;
             Player p2 = null;
@@ -1069,6 +1502,12 @@ namespace AiTeammate
                 var defP2 = p2;
                 Callable.From(delegate {
                     if (!IsInCombat()) { DisarmIndependentP2Lifeline("deferred-not-in-combat"); return; }
+                    if (AreAllPlayersDead() || IsTerminalCombatFinalized)
+                    {
+                        DisarmIndependentP2Lifeline("deferred-all-players-dead");
+                        LogTerminalCombatFinalized("all-players-dead");
+                        return;
+                    }
                     try
                     {
                         ForceEndTurnForPlayer2(defCm, defState, defP2);
@@ -1126,6 +1565,14 @@ namespace AiTeammate
         }
 
 
+
+        public static bool IsPlayer1(Player p)
+        {
+            if (p == null) return false;
+            ulong p1NetId = GetPlayer1NetId();
+            if (p1NetId != 0 && p.NetId == p1NetId) return true;
+            return false;
+        }
 
         public static bool IsPlayer2(Player p)
 
@@ -1210,6 +1657,26 @@ namespace AiTeammate
         public static bool PendingNativeChoiceContinuation = false;
         public static DateTime NativeChoiceFailureTime = DateTime.MinValue;
         public static bool HasRetriedNativeChoiceRecoveryThisTurn = false;
+
+        // Directive #5.89 T2: pure telemetry for "why did P2 fall into the greedy fallback this turn".
+        // P2GreedyTriggerHint is an explicit one-shot caller hint (draw-stall / choice-failure / plan-empty),
+        // P2GreedyTriggerLoggedKey dedupes the greedy-trigger line per (turn,trigger) pair,
+        // P2LastSolverEventTag records the most recent solver-related event label.
+        public static string P2GreedyTriggerHint = null;
+        public static string P2GreedyTriggerLoggedKey = null;
+        public static string P2LastSolverEventTag = "none";
+
+        public static void NoteSolverEvent(string tag)
+        {
+            try { P2LastSolverEventTag = string.IsNullOrEmpty(tag) ? "none" : tag; } catch { }
+        }
+
+        // Directive #5.89 T2: one bounded line per P2FallbackExhaustedThisTurn=true set-site, so the
+        // next log can tell WHICH branch latched the fallback exhausted state this turn.
+        public static void LogFallbackExhaustedSet(string reasonName)
+        {
+            try { GD.Print(string.Format("[AiTeammate][Coord] fallback-exhausted-set turn={0} reason={1}", TurnNumber, reasonName)); } catch { }
+        }
 
         public static bool IsPlayPhase()
         {
@@ -1394,7 +1861,223 @@ namespace AiTeammate
         {
             return !string.IsNullOrEmpty(source) &&
                 (source.StartsWith("wakuu-p1-restore", StringComparison.OrdinalIgnoreCase) ||
-                 source.StartsWith("wakuu-p2-scope-restore", StringComparison.OrdinalIgnoreCase));
+                 source.StartsWith("wakuu-p2-scope-restore", StringComparison.OrdinalIgnoreCase) ||
+                 source.StartsWith("run-start", StringComparison.OrdinalIgnoreCase) ||
+                 source.StartsWith("run-launch", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool _runStartIdentityResetDone = false;
+        private static int _runStartRecoverCount = 0;
+        private const int MaxRunStartRecoverCount = 3;
+
+        public static void ResetRunStartIdentityState()
+        {
+            _runStartIdentityResetDone = false;
+            _runStartRecoverCount = 0;
+        }
+
+        public static string FormatPlayerLabel(ulong netId, ulong p1Id, ulong p2Id)
+        {
+            if (netId != 0)
+            {
+                if (p1Id != 0 && netId == p1Id) return "P1";
+                if (p2Id != 0 && netId == p2Id) return "P2";
+                return netId.ToString();
+            }
+            return "None";
+        }
+
+        public static ulong GetCurrentSenderId()
+        {
+            try
+            {
+                var coopContextType = AccessTools.TypeByName("LocalMultiControl.Scripts.Runtime.LocalSelfCoopContext");
+                if (coopContextType != null)
+                {
+                    var getNetService = AccessTools.PropertyGetter(coopContextType, "NetService");
+                    object netService = getNetService != null ? getNetService.Invoke(null, null) : null;
+                    if (netService != null)
+                    {
+                        var fSender = AccessTools.Field(netService.GetType(), "_currentSenderId");
+                        if (fSender != null)
+                        {
+                            object val = fSender.GetValue(netService);
+                            if (val is ulong) return (ulong)val;
+                        }
+                    }
+                }
+            }
+            catch {}
+            return LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+        }
+
+        public static void SetCurrentSenderId(ulong senderId)
+        {
+            try
+            {
+                var coopContextType = AccessTools.TypeByName("LocalMultiControl.Scripts.Runtime.LocalSelfCoopContext");
+                if (coopContextType != null)
+                {
+                    var getNetService = AccessTools.PropertyGetter(coopContextType, "NetService");
+                    object netService = getNetService != null ? getNetService.Invoke(null, null) : null;
+                    if (netService != null)
+                    {
+                        var setSender = AccessTools.Method(netService.GetType(), "SetCurrentSenderId", new Type[] { typeof(ulong) });
+                        if (setSender != null)
+                        {
+                            setSender.Invoke(netService, new object[] { senderId });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate] SetCurrentSenderId error: " + ex.Message);
+            }
+        }
+
+        public static ulong GetVisiblePotionOwnerId()
+        {
+            try
+            {
+                var run = NRun.Instance;
+                if (run != null && GodotObject.IsInstanceValid(run))
+                {
+                    var globalUi = run.GlobalUi;
+                    if (globalUi != null && GodotObject.IsInstanceValid(globalUi))
+                    {
+                        var topBar = globalUi.TopBar;
+                        if (topBar != null && GodotObject.IsInstanceValid(topBar))
+                        {
+                            var container = topBar.PotionContainer;
+                            if (container != null && GodotObject.IsInstanceValid(container))
+                            {
+                                FieldInfo fPlayer = AccessTools.Field(typeof(NPotionContainer), "_player");
+                                Player visiblePlayer = fPlayer != null ? fPlayer.GetValue(container) as Player : null;
+                                if (visiblePlayer != null) return visiblePlayer.NetId;
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+            return 0;
+        }
+
+        public static void ResetRunStartIdentityToP1(string source)
+        {
+            try
+            {
+                ulong p1Id = GetPlayer1NetId();
+                ulong p2Id = GetPlayer2NetId();
+                if (p1Id == 0) return;
+
+                ulong curLocal = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                ulong curDra = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                if (_runStartIdentityResetDone && (p2Id == 0 || (curLocal == p1Id && curDra == p1Id)))
+                {
+                    return;
+                }
+
+                if (_runStartRecoverCount >= MaxRunStartRecoverCount)
+                {
+                    GD.PrintErr(string.Format("[AiTeammate][Coord] run-start-identity-reset budget exceeded source={0}", source));
+                    return;
+                }
+                _runStartRecoverCount++;
+
+                ulong controllerBefore = curDra;
+                ulong localNetIdBefore = curLocal;
+                ulong senderBefore = GetCurrentSenderId();
+                ulong potionOwnerBefore = GetVisiblePotionOwnerId();
+
+                GD.Print(string.Format("[AiTeammate][Coord] run-start-identity-before controller={0} localNetId={1} sender={2} potionOwner={3}",
+                    FormatPlayerLabel(controllerBefore, p1Id, p2Id),
+                    FormatPlayerLabel(localNetIdBefore, p1Id, p2Id),
+                    FormatPlayerLabel(senderBefore, p1Id, p2Id),
+                    FormatPlayerLabel(potionOwnerBefore, p1Id, p2Id)));
+
+                GD.Print("[AiTeammate][Coord] run-start-identity-forced-p1 controller=P1 localNetId=P1 sender=P1");
+
+                // 1. Reset LocalContext
+                LocalContext.NetId = p1Id;
+
+                // 2. Reset sender ID
+                SetCurrentSenderId(p1Id);
+
+                // 3. Align DRA Session & switch controller
+                var multiRuntimeType = AccessTools.TypeByName("LocalMultiControl.Scripts.Runtime.LocalMultiControlRuntime");
+                if (multiRuntimeType != null)
+                {
+                    var sessionField = AccessTools.Field(multiRuntimeType, "Session");
+                    object session = sessionField != null ? sessionField.GetValue(null) : null;
+                    if (session != null)
+                    {
+                        var trySetCurrent = AccessTools.Method(session.GetType(), "TrySetCurrentPlayer", new Type[] { typeof(ulong) });
+                        if (trySetCurrent != null)
+                        {
+                            trySetCurrent.Invoke(session, new object[] { p1Id });
+                        }
+                    }
+                }
+                TurnFlowPatches.SwitchControlToPlayer(p1Id, "run-start-forced-p1", false);
+
+                // 4. Refresh TopBar & Sync synchronizer
+                if (multiRuntimeType != null)
+                {
+                    var refreshTopBar = AccessTools.Method(multiRuntimeType, "RefreshTopBarForControlledPlayer", new Type[] { typeof(ulong) });
+                    if (refreshTopBar != null)
+                    {
+                        refreshTopBar.Invoke(null, new object[] { p1Id });
+                    }
+
+                    var syncRunSync = AccessTools.Method(multiRuntimeType, "SyncRunSynchronizerLocalPlayerId", new Type[] { typeof(ulong) });
+                    if (syncRunSync != null)
+                    {
+                        syncRunSync.Invoke(null, new object[] { p1Id });
+                    }
+                }
+
+                // 5. Bind Potion UI to P1
+                FlowCoordinator.EnsureP1PotionUiBound("run-start");
+
+                _runStartIdentityResetDone = true;
+
+                ulong controllerAfter = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong localNetIdAfter = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                ulong senderAfter = GetCurrentSenderId();
+                ulong potionOwnerAfter = GetVisiblePotionOwnerId();
+
+                GD.Print(string.Format("[AiTeammate][Coord] run-start-identity-after controller={0} localNetId={1} sender={2} potionOwner={3}",
+                    FormatPlayerLabel(controllerAfter, p1Id, p2Id),
+                    FormatPlayerLabel(localNetIdAfter, p1Id, p2Id),
+                    FormatPlayerLabel(senderAfter, p1Id, p2Id),
+                    FormatPlayerLabel(potionOwnerAfter, p1Id, p2Id)));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] ResetRunStartIdentityToP1 error: " + ex);
+            }
+        }
+
+        public static bool CheckAndRecoverRunIdentity(string contextSource)
+        {
+            try
+            {
+                ulong p1Id = GetPlayer1NetId();
+                ulong p2Id = GetPlayer2NetId();
+                if (p1Id == 0 || p2Id == 0) return true;
+
+                ulong localNetId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                if (localNetId == p2Id)
+                {
+                    GD.PrintErr(string.Format("[AiTeammate][Coord] run-identity-drift-detected source={0} localNetId=P2 -> forcing P1 recovery", contextSource ?? "unknown"));
+                    ResetRunStartIdentityToP1("drift-recovery:" + (contextSource ?? "unknown"));
+                    return false;
+                }
+            }
+            catch {}
+            return true;
         }
 
         public static void ResetP1RestoreState()
@@ -1512,77 +2195,81 @@ namespace AiTeammate
 
 
 
-        public static ulong GetPlayer1NetId()
+        private static ulong LastIdentityLogP1 = 0;
+        private static ulong LastIdentityLogP2 = 0;
 
+        public static void LogIdentity(string source, ulong p1, ulong p2)
         {
-
-            try
-
+            if (p1 != LastIdentityLogP1 || p2 != LastIdentityLogP2)
             {
-                var cm = CombatManager.Instance;
-
-                if (cm != null)
-
-                {
-
-                    var state = cm.DebugOnlyGetState();
-
-                    if (state != null && state.Players != null && state.Players.Count > 0)
-
-                    {
-
-                        var p1 = state.Players[0];
-
-                        if (p1 != null) return p1.NetId;
-
-                    }
-
-                }
-
+                LastIdentityLogP1 = p1;
+                LastIdentityLogP2 = p2;
+                GD.Print(string.Format("[AiTeammate][Identity] identity-source={0} p1={1} p2={2}", source, p1, p2));
             }
-
-            catch { }
-
-            return 0;
-
         }
 
-
-
-        public static ulong GetPlayer2NetId()
-
+        public static ulong GetPlayer1NetId()
         {
-
             try
-
             {
-
-                var cm = CombatManager.Instance;
-
-                if (cm != null)
-
+                Player p1 = FlowCoordinator.GetPlayer1();
+                if (p1 != null && p1.NetId != 0)
                 {
-
-                    var state = cm.DebugOnlyGetState();
-
-                    if (state != null && state.Players != null && state.Players.Count > 1)
-
-                    {
-
-                        var p2 = state.Players[state.Players.Count - 1];
-
-                        if (p2 != null) return p2.NetId;
-
-                    }
-
+                    ulong p2Id = FlowCoordinator.GetPlayer2() != null ? FlowCoordinator.GetPlayer2().NetId : 0;
+                    LogIdentity("runstate", p1.NetId, p2Id);
+                    return p1.NetId;
                 }
 
+                var cm = CombatManager.Instance;
+                if (cm != null)
+                {
+                    var state = cm.DebugOnlyGetState();
+                    if (state != null && state.Players != null && state.Players.Count > 0)
+                    {
+                        var cp1 = state.Players[0];
+                        if (cp1 != null && cp1.NetId != 0)
+                        {
+                            ulong cp2Id = state.Players.Count > 1 && state.Players[1] != null ? state.Players[1].NetId : 0;
+                            LogIdentity("combat", cp1.NetId, cp2Id);
+                            return cp1.NetId;
+                        }
+                    }
+                }
             }
-
             catch { }
-
             return 0;
+        }
 
+        public static ulong GetPlayer2NetId()
+        {
+            try
+            {
+                Player p2 = FlowCoordinator.GetPlayer2();
+                if (p2 != null && p2.NetId != 0)
+                {
+                    ulong p1Id = FlowCoordinator.GetPlayer1() != null ? FlowCoordinator.GetPlayer1().NetId : 0;
+                    LogIdentity("runstate", p1Id, p2.NetId);
+                    return p2.NetId;
+                }
+
+                var cm = CombatManager.Instance;
+                if (cm != null)
+                {
+                    var state = cm.DebugOnlyGetState();
+                    if (state != null && state.Players != null && state.Players.Count > 1)
+                    {
+                        var cp2 = state.Players[1];
+                        if (cp2 != null && cp2.NetId != 0)
+                        {
+                            ulong cp1Id = state.Players.Count > 0 && state.Players[0] != null ? state.Players[0].NetId : 0;
+                            LogIdentity("combat", cp1Id, cp2.NetId);
+                            return cp2.NetId;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return 0;
         }
 
 
@@ -1763,6 +2450,56 @@ namespace AiTeammate
 
             }
 
+        }
+
+        public static bool IsPlayer2Dead()
+
+        {
+
+            try
+
+            {
+
+                var cm = CombatManager.Instance;
+
+                if (cm == null) return false;
+
+                var state = cm.DebugOnlyGetState();
+
+                if (state == null || state.Players == null || state.Players.Count < 2) return false;
+
+                var p2 = state.Players[state.Players.Count - 1];
+
+                return p2 == null || p2.Creature == null || !p2.Creature.IsAlive;
+
+            }
+
+            catch
+
+            {
+
+                return false;
+
+            }
+
+        }
+
+        public static CombatState ResolveStateFromArgs(object[] args)
+        {
+            try { if (args != null) foreach (object arg in args) if (arg is CombatState) return (CombatState)arg; } catch { }
+            try { return CombatManager.Instance != null ? CombatManager.Instance.DebugOnlyGetState() : null; } catch { return null; }
+        }
+
+        public static object ResolveResultFromArgs(object[] args)
+        {
+            if (args == null) return null;
+            for (int i = args.Length - 1; i >= 0; i--)
+            {
+                object arg = args[i];
+                if (arg == null || arg is CombatState) continue;
+                try { if (TurnCoordinator.GetMemberValue(arg, "BestNode") != null || TurnCoordinator.GetMemberValue(arg, "Actions") != null || TurnCoordinator.GetMemberValue(arg, "ActionCount") != null) return arg; } catch { }
+            }
+            return null;
         }
 
 
@@ -1956,6 +2693,25 @@ namespace AiTeammate
             PendingNativeChoiceContinuation = false;
             NativeChoiceFailureTime = DateTime.MinValue;
             HasRetriedNativeChoiceRecoveryThisTurn = false;
+            // Directive #5.89 T2: clear per-turn greedy-trigger telemetry.
+            P2GreedyTriggerHint = null;
+            P2GreedyTriggerLoggedKey = null;
+            P2LastSolverEventTag = "none";
+            PendingPotionContinuation = false;
+            PotionContinuationScheduled = false;
+            PotionContinuationRetryCount = 0;
+            _lastPotionAttemptTime = DateTime.MinValue;
+            _lastPotionDeferredLogTime = DateTime.MinValue;
+            PlanEmptyRecoveryAttemptedThisTurn = false;
+            PlanEmptyRecoveryInProgress = false;
+            PlanEmptyRecoveryStartTime = DateTime.MinValue;
+            PlanEmptyRecalcRequestedThisTurn = false;
+            PlanEmptyFallbackRequestedThisTurn = false;
+            P2PlayedCardsAtRecalcStart = 0;
+            // Directive #5.92 T2: reset the post-deploy continuation latch with all other per-turn state.
+            P2PendingPostDeployContinuation = false;
+            P2PendingPostDeployContinuationSince = DateTime.MinValue;
+            P2PendingPostDeployContinuationTurn = -1;
 
             P1ActionExecutingInstance = null;
 
@@ -1993,6 +2749,18 @@ namespace AiTeammate
 
             CachedDeployResult = null;
 
+            CachedDeployMethod = null;
+
+            CachedDeployMethodName = null;
+
+            CachedDeployParamCount = 0;
+
+            CachedDeployParamTypes = null;
+
+            CachedDeploySource = null;
+
+            CachedDeployTurn = -1;
+
             CurrentRecalcGeneration = 0;
 
             HasSelfHealedHandThisTurn = false;
@@ -2028,6 +2796,12 @@ namespace AiTeammate
             if (source == "SetupPlayerTurn" || source == "CombatStart" || source == "RoundStart" || (source.IndexOf("Turn", StringComparison.OrdinalIgnoreCase) >= 0 && source != "OnEndedTurnLocally"))
 
             {
+                P1RestorePendingForPhaseAdvance = false;
+                P2EndTurnEnqueuedThisTurn = false;
+                P2EndTurnConfirmedThisTurn = false;
+                P2EndTurnEnqueuedCountThisTurn = 0;
+                P2EndTurnRetryCountThisTurn = 0;
+                P2EndTurnFailedOpenThisTurn = false;
                 P2ZeroActionProtectionFinalizedThisTurn = false;
                 P2SummaryFinalizedThisTurn = false;
                 P2FallbackGreedyUsedThisTurn = false;
@@ -2035,6 +2809,13 @@ namespace AiTeammate
                 P2FallbackActionEnqueuedThisTurn = false;
                 P2FallbackActionExecutedThisTurn = false;
                 P2FallbackEndTurnQueuedThisTurn = false;
+                P2PlanEmptyRecalcCountThisTurn = 0;
+                P2FallbackExecutedThisTurn = false;
+                P2PostFallbackRecalcAttemptedThisTurn = false;
+                P2FallbackExhaustedThisTurn = false;
+                P2PostFallbackGreedyContinuationUsedThisTurn = false;
+                P2SuspectTruncatedAfterOneCardThisTurn = false;
+                P2PendingEndTurnWakeup = false;
                 P2TelemetryTurn = -1;
 
                 // R2-4: any P2 choice overlay left over from the previous turn must be resolved or
@@ -2162,6 +2943,24 @@ namespace AiTeammate
         {
             ResetTurnState(source);
             bool isNewTurnOrCombat = (source == "SetupPlayerTurn" || source == "SetUpCombat" || source == "CombatStart" || source == "RoundStart" || source == "OnEndedTurnLocally");
+            if (isNewTurnOrCombat)
+            {
+                IsTerminalCombatFinalized = false;
+                HasLoggedTerminalCombatFinalized = false;
+            }
+            if (source == "SetUpCombat" || source == "CombatStart")
+            {
+                CombatGeneration++;
+                P2EndTurnEnqueuedKeys.Clear();
+                // Directive #5.92 T1: re-emit the enforcement banner once PER COMBAT (verification
+                // requires solver-settings-enforced >= 1 line in every battle, not once per process).
+                _solverSettingsEnforcedLogged = false;
+                // Directive #5.91 T1: every new combat re-asserts the solver settings (the player may
+                // have opened the CombatSolver settings panel in between and reset them).
+                EnsureOptimalCombatSolverSettings();
+                ClearAllP1Choices(source);
+                P1InputLockDepth = 0;
+            }
             bool noP2ActionExecuting = !IsPlayer2ActionInFlight(false);
             if (P2ActionSenderScopeDepth > 0 && (isNewTurnOrCombat || noP2ActionExecuting))
             {
@@ -3020,39 +3819,74 @@ namespace AiTeammate
         }
 
         public static bool IsAffordable(CardModel card, Player player)
-
         {
-
             if (card == null || player == null) return false;
-
             try
-
             {
-
                 if (!CheckIsPlayable(card)) return false;
-
                 var pState = player.PlayerCombatState;
-
                 if (pState == null) return false;
 
-                int currentEnergy = pState.Energy;
+                // 1. Native resource sufficiency (covers energy, star cost, and excess energy hooks)
+                try
+                {
+                    MegaCrit.Sts2.Core.Entities.Cards.UnplayableReason reason;
+                    if (!pState.HasEnoughResourcesFor(card, out reason))
+                    {
+                        return false;
+                    }
+                }
+                catch
+                {
+                    // Fallback manual resource check
+                    int currentEnergy = pState.Energy;
+                    int cost = GetCardEnergyCost(card);
+                    if (cost > currentEnergy) return false;
+                    try
+                    {
+                        int starCost = card.CurrentStarCost;
+                        if (starCost > 0 && pState.Stars < starCost) return false;
+                    }
+                    catch { }
+                }
 
-                int cost = GetCardEnergyCost(card);
+                // 2. Extra safety guard: when energy is 0 or less, ensure card does not require energy > 0 or unfulfilled star cost
+                int curEnergy = pState.Energy;
+                if (curEnergy <= 0)
+                {
+                    int cost = GetCardEnergyCost(card);
+                    if (cost > 0) return false;
+                    try
+                    {
+                        int starCost = card.CurrentStarCost;
+                        if (starCost > 0 && pState.Stars < starCost) return false;
+                    }
+                    catch { }
+                }
 
-                return cost <= currentEnergy;
-
+                return true;
             }
-
             catch (Exception ex)
-
             {
-
                 GD.PrintErr("[AiTeammate][Coord] IsAffordable error: " + ex.Message);
-
                 return false;
-
             }
+        }
 
+        public static bool CanCardBePlayedByPlayer(CardModel card, Player player)
+        {
+            if (card == null || player == null) return false;
+            if (!CheckIsPlayable(card)) return false;
+            if (!IsAffordable(card, player)) return false;
+            if (IsInCombat())
+            {
+                try
+                {
+                    if (!card.CanPlay()) return false;
+                }
+                catch { }
+            }
+            return true;
         }
 
 
@@ -5309,6 +6143,11 @@ namespace AiTeammate
         public static void RebindHandContainerToPlayer1(CombatManager cm, CombatState state, Player player1)
 
         {
+            if (TurnCoordinator.IsTerminalCombatFinalized || TurnCoordinator.AreAllPlayersDead())
+            {
+                TurnCoordinator.LogTerminalCombatFinalized("all-players-dead");
+                return;
+            }
 
             // Directive #5.35 T2.4: Never rebuild hand while P1 is busy playing cards
             if (player1 != null && player1.Creature != null && player1.Creature.IsAlive)
@@ -6324,22 +7163,66 @@ namespace AiTeammate
             {
                 int count = GetPlanActionCount(args);
                 if (count >= 0) P2PlanLengthThisTurn = count;
-                P2PlanHasAttackThisTurn = false;
-                P2PlanHasCardActionThisTurn = false;
                 object plan = FindPlanObject(args);
                 IEnumerable actions = GetPlanActions(plan);
+                if (actions == null)
+                {
+                    // Directive #5.87: this entry point could not resolve a plan object. Keep the
+                    // last known plan telemetry instead of zeroing it (a zeroed plan is what made
+                    // DeployCurrentTurn look "plan-empty" while a real 34-action plan existed).
+                    UpdateSearchTelemetry(source);
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-plan-observed turn={0} plan-len={1} plan-card={2} plan-attack={3} search-status={4} search-nodes={5} source={6} plan-unavailable=1", TurnNumber, P2PlanLengthThisTurn, P2PlanHasCardActionThisTurn, P2PlanHasAttackThisTurn, P2SearchStatusThisTurn, P2SearchNodesThisTurn, source ?? "unknown"));
+                    return;
+                }
+                P2PlanHasAttackThisTurn = false;
+                P2PlanHasCardActionThisTurn = false;
+                int planActionIdx = 0;
+                int endTurnIdx = -1;
+                int totalPlanCardActions = 0;
+                List<string> plannedCards = new List<string>();
                 if (actions != null)
                 {
                     foreach (object action in actions)
                     {
-                        if (action == null) continue;
-                        string actionName = action.GetType().Name;
-                        if (actionName.IndexOf("PlayCardAction", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                        P2PlanHasCardActionThisTurn = true;
-                        CardModel card = GetMemberValue(action, "Card") as CardModel ?? GetMemberValue(action, "CardModel") as CardModel;
-                        if (card != null && IsAttack(card)) P2PlanHasAttackThisTurn = true;
+                        if (action == null) { planActionIdx++; continue; }
+                        string kindStr = GetMemberValue(action, "Kind") != null ? GetMemberValue(action, "Kind").ToString() : action.GetType().Name;
+                        bool endsTurn = false;
+                        object endsTurnObj = GetMemberValue(action, "EndsPlayerTurn");
+                        if (endsTurnObj is bool) endsTurn = (bool)endsTurnObj;
+                        bool isPlayCardAction = kindStr.IndexOf("PlayCard", StringComparison.OrdinalIgnoreCase) >= 0;
+                        bool isEndTurnAction = endsTurn || kindStr.IndexOf("EndTurn", StringComparison.OrdinalIgnoreCase) >= 0;
+                        // Directive #5.88 T1: CombatSolver.PlanActionKind = { PlayCard=0, UsePotion=1,
+                        // EndTurn=2 } and a Plan.Actions list spans several future turns split by
+                        // EndTurn entries. "boundaryBefore" is the turn boundary known BEFORE this
+                        // action, so a card that itself ends the turn still counts as this turn's card
+                        // while every action after the first boundary is ignored.
+                        int boundaryBefore = endTurnIdx;
+                        if (isPlayCardAction)
+                        {
+                            totalPlanCardActions++;
+                            if (boundaryBefore < 0)
+                            {
+                                P2PlanHasCardActionThisTurn = true;
+                                // Directive #5.88: CombatSolver.PlanAction exposes "CardId" (string), not a
+                                // CardModel, which is why the old log only ever showed synthetic card_N ids.
+                                object cardIdObj = GetMemberValue(action, "CardId");
+                                string cid = cardIdObj != null ? cardIdObj.ToString() : null;
+                                if (string.IsNullOrEmpty(cid))
+                                {
+                                    CardModel card = GetMemberValue(action, "Card") as CardModel ?? GetMemberValue(action, "CardModel") as CardModel;
+                                    cid = card != null && card.Id != null ? card.Id.ToString() : "card_" + planActionIdx;
+                                    if (card != null && IsAttack(card)) P2PlanHasAttackThisTurn = true;
+                                }
+                                plannedCards.Add(cid);
+                            }
+                        }
+                        if (isEndTurnAction && endTurnIdx < 0) endTurnIdx = planActionIdx;
+                        planActionIdx++;
                     }
                 }
+                P2PlannedCardActionsThisTurn = plannedCards.Count;
+                string plannedCardsStr = plannedCards.Count > 0 ? string.Join(",", plannedCards.ToArray()) : "none";
+                GD.Print(string.Format("[AiTeammate][Coord] solver-plan-inspect turn={0} planned-card-actions={1} end-turn-index={2} total-plan-card-actions={3}", TurnNumber, plannedCardsStr, endTurnIdx, totalPlanCardActions));
                 UpdateSearchTelemetry(source);
                 GD.Print(string.Format("[AiTeammate][Coord] p2-plan-observed turn={0} plan-len={1} plan-card={2} plan-attack={3} search-status={4} search-nodes={5} source={6}", TurnNumber, P2PlanLengthThisTurn, P2PlanHasCardActionThisTurn, P2PlanHasAttackThisTurn, P2SearchStatusThisTurn, P2SearchNodesThisTurn, source ?? "unknown"));
             }
@@ -6568,6 +7451,239 @@ namespace AiTeammate
 
 
 
+        public static void CacheDeploymentCall(MethodInfo method, object[] args, string source, int turn, object instance)
+        {
+            try
+            {
+                if (instance != null) CachedSolverController = instance;
+                if (method == null && args != null)
+                {
+                    if (args.Length == 3 && StartDeploymentMethod != null) method = StartDeploymentMethod;
+                    else if (args.Length == 6 && DeployCurrentTurnMethod != null) method = DeployCurrentTurnMethod;
+                }
+                CachedDeployMethod = method;
+                CachedDeployArgs = args != null ? (object[])args.Clone() : null;
+                CachedDeployMethodName = method != null ? method.Name : (args != null ? (args.Length == 3 ? "StartDeployment" : (args.Length == 6 ? "DeployCurrentTurn" : "unknown")) : "unknown");
+                CachedDeployParamCount = args != null ? args.Length : 0;
+                string[] types;
+                if (args != null)
+                {
+                    types = new string[args.Length];
+                    for (int i = 0; i < args.Length; i++)
+                    {
+                        types[i] = (args[i] != null) ? args[i].GetType().Name : "null";
+                    }
+                }
+                else
+                {
+                    types = new string[0];
+                }
+                CachedDeployParamTypes = types;
+                CachedDeploySource = source ?? "unknown";
+                CachedDeployTurn = turn;
+
+                object res = ResolveResultFromArgs(args);
+                if (res != null) CachedDeployResult = res;
+
+                string typesStr = CachedDeployParamTypes != null ? string.Join(",", CachedDeployParamTypes) : "";
+                GD.Print(string.Format("[AiTeammate][Coord] deploy-args-cached method={0} params={1} types=[{2}] source={3} turn={4}",
+                    CachedDeployMethodName, CachedDeployParamCount, typesStr, CachedDeploySource, CachedDeployTurn));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] CacheDeploymentCall error: " + ex);
+            }
+        }
+
+        public static void LogEndTurnButtonStateAudit(string state, string reason, string source, MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton btn = null)
+        {
+            try
+            {
+                ulong localId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                ulong draId = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                bool p1Alive = !IsPlayer1Dead();
+                bool p2Alive = !IsPlayer2Dead();
+
+                var cm = CombatManager.Instance;
+                bool actionsDisabled = (P1InputLockDepth > 0) || (cm != null && cm.PlayerActionsDisabled);
+                bool isDeploying = IsDeploying;
+                // Directive #5.86 (Task 1B): RecalcRequestedThisTurn is a latch that stayed true for
+                // the whole turn, so the audit reported solverRecalculating=True even after P2 had
+                // ended its turn. Report an *in-flight* recalculation instead: the request must still
+                // be unsatisfied and P2's turn must not be settled yet.
+                bool solverRecalc = PlanEmptyRecoveryInProgress || (RecalcRequestedThisTurn && !RecalcSucceeded && !IsP2TurnSettled());
+
+                Player p1 = FlowCoordinator.GetPlayer1();
+                Player p2 = FlowCoordinator.GetPlayer2();
+                int p1Queue = p1 != null ? GetP2QueuePlayCardCount(p1.NetId) : 0;
+                int p2Queue = p2 != null ? GetP2QueuePlayCardCount(p2.NetId) : 0;
+
+                if (string.IsNullOrEmpty(reason) || reason == "auto")
+                {
+                    if (!IsPlayPhase()) reason = "non-playphase";
+                    else if (isDeploying) reason = "p2-deploying";
+                    else if (!p1Alive && p2Alive) reason = "p1-dead-p2-active";
+                    else if (actionsDisabled) reason = "input-lock-disabled";
+                    else if (solverRecalc) reason = "solver-recalculating";
+                    else if (p1Queue > 0 || p2Queue > 0) reason = "queue-has-actions";
+                    else if (localId != 0 && draId != 0 && localId != draId) reason = "context-mismatch";
+                    else reason = "native-state-check";
+                }
+
+                string logMsg = string.Format(
+                    "[AiTeammate][Coord] endturn-state-audit state={0} LocalContext={1} DRA={2} P1Alive={3} P2Alive={4} PlayerActionsDisabled={5} IsDeploying={6} solverRecalculating={7} p1Queue={8} p2Queue={9} reason={10} source={11}",
+                    state ?? "unknown",
+                    localId != 0 ? localId.ToString() : "none",
+                    draId != 0 ? draId.ToString() : "none",
+                    p1Alive,
+                    p2Alive,
+                    actionsDisabled,
+                    isDeploying,
+                    solverRecalc,
+                    p1Queue,
+                    p2Queue,
+                    reason,
+                    source ?? "unknown"
+                );
+                GD.Print(logMsg);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] LogEndTurnButtonStateAudit error: " + ex);
+            }
+        }
+
+        // Directive #5.97-HF1 Task 1: Re-entrancy guard & in-flight AnimIn tween tracker
+        private static bool _isHealingEndTurnButton = false;
+        public static DateTime LastEndTurnAnimInUtc = DateTime.MinValue;
+
+        // Directive #5.97 Task 1 & #5.97-HF1: Self-heal NEndTurnButton if stuck at HidePos (off-screen)
+        public static void HealEndTurnButtonIfMisplaced(MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton btn, string caller)
+        {
+            if (_isHealingEndTurnButton) return;
+            try
+            {
+                _isHealingEndTurnButton = true;
+                if (btn == null || !GodotObject.IsInstanceValid(btn)) return;
+                if (!IsInCombat() || !IsPlayPhase()) return;
+
+                bool p1Dead = IsPlayer1Dead();
+                Player p1 = FlowCoordinator.GetPlayer1();
+                var cm = CombatManager.Instance;
+                var cs = cm != null ? cm.DebugOnlyGetState() : null;
+                bool isPlayerSide = cs != null && cs.CurrentSide == CombatSide.Player;
+
+                if (p1Dead || p1 == null || cm == null || cm.IsPlayerReadyToEndTurn(p1) || !isPlayerSide) return;
+
+                FieldInfo stateField = AccessTools.Field(btn.GetType(), "_state");
+                PropertyInfo stateProp = AccessTools.Property(btn.GetType(), "State");
+                object currentState = stateField != null ? stateField.GetValue(btn) : (stateProp != null ? stateProp.GetValue(btn, null) : null);
+                int stateInt = -1;
+                try { if (currentState != null) stateInt = Convert.ToInt32(currentState); } catch { }
+
+                PropertyInfo canTurnProp = AccessTools.Property(btn.GetType(), "CanTurnBeEnded");
+                object canTurnObj = canTurnProp != null ? canTurnProp.GetValue(btn, null) : null;
+                bool canTurn = canTurnObj is bool && (bool)canTurnObj;
+
+                PropertyInfo showPosProp = AccessTools.Property(btn.GetType(), "ShowPos");
+                object spObj = showPosProp != null ? showPosProp.GetValue(btn, null) : null;
+                Vector2 showPos = spObj is Vector2 ? (Vector2)spObj : Vector2.Zero;
+
+                bool animInInFlight = (DateTime.UtcNow - LastEndTurnAnimInUtc).TotalMilliseconds < 650.0;
+                float distToShowPos = showPos != Vector2.Zero ? (btn.Position - showPos).Length() : 0f;
+                bool offscreen = !animInInFlight && showPos != Vector2.Zero && distToShowPos > 20f;
+                bool isHiddenState = (stateInt == 2);
+                bool shouldBeEnabled = canTurn && (stateInt != 0);
+                bool visualFaded = !animInInFlight && (!btn.Visible || btn.Modulate.A < 0.9f);
+
+                if (isHiddenState || shouldBeEnabled || offscreen || visualFaded)
+                {
+                    LastEndTurnAnimInUtc = DateTime.UtcNow;
+                    btn.Visible = true;
+                    Color mod = btn.Modulate;
+                    if (mod.A < 0.9f) { mod.A = 1.0f; btn.Modulate = mod; }
+
+                    if (stateField != null)
+                    {
+                        stateField.SetValue(btn, Enum.ToObject(stateField.FieldType, 2)); // State.Hidden
+                    }
+
+                    MethodInfo setStateMethod = AccessTools.Method(btn.GetType(), "SetState");
+                    if (setStateMethod != null)
+                    {
+                        ParameterInfo[] ps = setStateMethod.GetParameters();
+                        if (ps.Length > 0)
+                        {
+                            if (canTurn)
+                            {
+                                setStateMethod.Invoke(btn, new object[] { Enum.ToObject(ps[0].ParameterType, 0) }); // State.Enabled (triggers native AnimIn)
+                            }
+                            else
+                            {
+                                MethodInfo animInMethod = AccessTools.Method(btn.GetType(), "AnimIn");
+                                if (animInMethod != null) animInMethod.Invoke(btn, null);
+                                setStateMethod.Invoke(btn, new object[] { Enum.ToObject(ps[0].ParameterType, 1) }); // State.Disabled
+                            }
+                        }
+                    }
+                    string stateStr = stateField != null ? (stateField.GetValue(btn) ?? "unknown").ToString() : (stateProp != null ? (stateProp.GetValue(btn, null) ?? "unknown").ToString() : "unknown");
+                    GD.Print(string.Format("[AiTeammate][Coord] endturn-button-refresh-anim-healed caller={0} state={1} pos={2} showPos={3}", caller, stateStr, btn.Position, showPos));
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] HealEndTurnButtonIfMisplaced error: " + ex.Message);
+            }
+            finally
+            {
+                _isHealingEndTurnButton = false;
+            }
+        }
+
+        public static bool CheckDeadP1ZeroProgressFallback(string source)
+        {
+            try
+            {
+                if (!IsInCombat() || !IsPlayPhase()) return false;
+                if (AreAllPlayersDead() || IsTerminalCombatFinalized) return false;
+
+                if (!IsPlayer1Dead()) return false;
+                Player p2 = FlowCoordinator.GetPlayer2();
+                if (p2 == null || p2.Creature == null || !p2.Creature.IsAlive) return false;
+
+                if (IsPlayer2ActionInFlight()) return false;
+                if (GetP2QueuePlayCardCount(p2.NetId) > 0) return false;
+                if (P2PendingChoiceCount > 0 || FlowCoordinator.HasPendingP2Choice(p2) || IsPlayer1InChoiceScreen()) return false;
+
+                var cm = CombatManager.Instance;
+                if (cm != null && cm.IsPlayerReadyToEndTurn(p2)) return false;
+
+                GD.Print(string.Format("[AiTeammate][Coord] dead-p1-zero-progress-check source={0} turn={1} p2={2}", source, TurnNumber, p2.NetId));
+
+                int energy = (p2.PlayerCombatState != null) ? p2.PlayerCombatState.Energy : 0;
+                bool hasAtk;
+                bool hasUsable = P2HasUsableCard(p2, out hasAtk);
+
+                if (energy > 0 && hasUsable && !P2FallbackGreedyUsedThisTurn)
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] dead-p1-zero-progress fallback=greedy turn={0}", TurnNumber));
+                    bool enqueued = TryFallbackGreedy(p2);
+                    if (enqueued) return true;
+                }
+
+                GD.Print(string.Format("[AiTeammate][Coord] dead-p1-zero-progress fallback=endturn turn={0} source={1}", TurnNumber, source));
+                P2FallbackExhaustedThisTurn = true;
+                LogFallbackExhaustedSet("dead-p1-zero-progress");
+                PlanEmptyRecoveryInProgress = false;
+                return EnqueueP2EndTurn(p2);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] CheckDeadP1ZeroProgressFallback exception: " + ex);
+                return false;
+            }
+        }
+
         public static void RequestRecalculation(CombatState state, string trigger)
 
         {
@@ -6589,13 +7705,33 @@ namespace AiTeammate
                     trigger != "plan-empty-retry" && 
                     trigger != "deploy-hook-missed-recovery" && 
                     trigger != "enemy-already-debuffed" && 
+                    trigger != "lifeline-cards-affordable" && 
+                    trigger != "p1-dead-recovery" && 
                     !(trigger != null && trigger.StartsWith("solver-early-end", StringComparison.OrdinalIgnoreCase) && !HasRetriedSolverEarlyEndThisTurn))
 
                 {
 
                     GD.Print("[AiTeammate][Coord] RequestRecalculation blocked: already requested once this turn (trigger=" + trigger + ")");
 
-                    TriggerCachedDeployment();
+                    if (IsPlayer1Dead())
+                    {
+                        CheckDeadP1ZeroProgressFallback("recalc-blocked-dead-p1");
+                    }
+                    else
+                    {
+                        Player p2Player = FlowCoordinator.GetPlayer2();
+                        ulong p2NetId = (p2Player != null) ? p2Player.NetId : 0;
+                        bool hasQueuedCards = (p2NetId != 0 && GetP2QueuePlayCardCount(p2NetId) > 0);
+                        if (P2FallbackGreedyUsedThisTurn || P2FallbackExecutedThisTurn || HasCompletedDeploymentThisTurn || hasQueuedCards)
+                        {
+                            GD.Print(string.Format("[AiTeammate][Coord] TriggerCachedDeployment skipped: fallback or deployment active (fallbackGreedy={0} fallbackExecuted={1} completedDeploy={2} queuedCards={3})",
+                                P2FallbackGreedyUsedThisTurn, P2FallbackExecutedThisTurn, HasCompletedDeploymentThisTurn, hasQueuedCards));
+                        }
+                        else
+                        {
+                            TriggerCachedDeployment();
+                        }
+                    }
 
                     return;
 
@@ -6628,6 +7764,32 @@ namespace AiTeammate
                 // 1. Reset all solver state: unfreeze route, resume auto, cancel search CTS, cancel deferred, cancel deployment
 
                 ResetSolverStateBeforeSearch();
+
+                // Directive #5.91 T1: enforce the CombatSolver per-layer time budget before every search.
+                EnsureOptimalCombatSolverSettings();
+
+
+
+                // Directive #5.90 T1.3: a freshly requested search must not be mistaken for a finished
+                // deployment. ResetTurnState("OnEndedTurnLocally") sets HasCompletedDeploymentThisTurn=true
+                // mid-round, so without this reset the new search was killed on its very first tick with
+                // staleReason=deployment-already-completed.
+                HasCompletedDeploymentThisTurn = false;
+                SolverEarlyEndReportedThisTurn = false;
+
+                // Directive #5.90 T1.3: CombatSolver rejects a search started while the game still has
+                // PlayerActionsDisabled ("SEARCH_REJECT reason=玩家操作当前被游戏禁用"). Recalculations
+                // were requested from inside DeployCurrentTurn, where actions are disabled.
+                try
+                {
+                    var cmReenable = CombatManager.Instance;
+                    if (cmReenable != null && cmReenable.PlayerActionsDisabled && P1InputLockDepth <= 0 && !IsDeploying)
+                    {
+                        TurnFlowPatches.SetPlayerActionsDisabled(cmReenable, false);
+                        GD.Print("[AiTeammate][Coord] recalc-actions-reenabled trigger=" + trigger + " turn=" + TurnNumber);
+                    }
+                }
+                catch { }
 
 
 
@@ -6695,7 +7857,14 @@ namespace AiTeammate
 
                     GD.PrintErr(string.Format("[AiTeammate][Coord] Cannot request recalculation: state={0}; falling back to cached deploy.", state == null));
 
-                    TriggerCachedDeployment();
+                    if (IsPlayer1Dead())
+                    {
+                        CheckDeadP1ZeroProgressFallback("recalc-failed-dead-p1");
+                    }
+                    else
+                    {
+                        TriggerCachedDeployment();
+                    }
 
                 }
 
@@ -6707,7 +7876,14 @@ namespace AiTeammate
 
                 GD.PrintErr("[AiTeammate][Coord] RequestRecalculation exception, fail-open to cached deploy: " + ex);
 
-                TriggerCachedDeployment();
+                if (IsPlayer1Dead())
+                {
+                    CheckDeadP1ZeroProgressFallback("recalc-exception-dead-p1");
+                }
+                else
+                {
+                    TriggerCachedDeployment();
+                }
 
             }
 
@@ -6767,17 +7943,45 @@ namespace AiTeammate
 
             {
 
-                if (DeployCurrentTurnMethod == null)
+                MethodInfo targetMethod = CachedDeployMethod;
+
+                object[] targetArgs = CachedDeployArgs;
+
+                object targetInstance = (targetMethod != null && targetMethod.IsStatic) ? null : CachedSolverController;
+
+
+
+                bool isValid = false;
+
+                if (targetMethod != null && targetArgs != null)
 
                 {
 
-                    var solverType = AccessTools.TypeByName("CombatSolver.SolverController");
+                    ParameterInfo[] parameters = targetMethod.GetParameters();
 
-                    if (solverType != null)
+                    if (parameters.Length == targetArgs.Length)
 
                     {
 
-                        DeployCurrentTurnMethod = AccessTools.Method(solverType, "DeployCurrentTurn");
+                        bool typesMatch = true;
+
+                        for (int i = 0; i < parameters.Length; i++)
+
+                        {
+
+                            if (targetArgs[i] != null && !parameters[i].ParameterType.IsAssignableFrom(targetArgs[i].GetType()))
+
+                            {
+
+                                typesMatch = false;
+
+                                break;
+
+                            }
+
+                        }
+
+                        if (typesMatch) isValid = true;
 
                     }
 
@@ -6785,67 +7989,105 @@ namespace AiTeammate
 
 
 
-                if (DeployCurrentTurnMethod != null)
+                if (isValid)
 
                 {
 
-                    int paramCount = DeployCurrentTurnMethod.GetParameters().Length;
+                    IsDeploying = true;
 
-                    object target = DeployCurrentTurnMethod.IsStatic ? null : CachedSolverController;
+                    DeployStartTime = DateTime.UtcNow;
 
-                    if (paramCount == 0)
+                    GD.Print("[AiTeammate][Coord] Invoking " + targetMethod.Name + " (" + targetArgs.Length + " params) on cached SolverController with verified cached args.");
+
+                    var res = targetMethod.Invoke(targetInstance, targetArgs);
+
+                    var task = res as Task;
+
+                    if (task != null) MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(task);
+
+                    return;
+
+                }
+
+
+
+                int expectedCount = targetMethod != null ? targetMethod.GetParameters().Length : -1;
+
+                int actualCount = targetArgs != null ? targetArgs.Length : -1;
+
+                GD.PrintErr("[AiTeammate][Coord] Cannot trigger cached deployment: parameter count mismatch (method expects " + expectedCount + ", cached args " + (actualCount >= 0 ? actualCount.ToString() : "null") + ")!");
+
+
+
+                CombatState combatState = null;
+
+                if (targetArgs != null) combatState = ResolveStateFromArgs(targetArgs);
+
+                if (combatState == null && CombatManager.Instance != null) combatState = CombatManager.Instance.DebugOnlyGetState();
+
+
+
+                object solverResult = CachedDeployResult;
+
+                if (solverResult == null && targetArgs != null) solverResult = ResolveResultFromArgs(targetArgs);
+
+
+
+                object host = (targetArgs != null && targetArgs.Length > 0 && targetArgs[0] is MegaCrit.Sts2.Core.Nodes.NGame)
+
+                    ? targetArgs[0]
+
+                    : (MegaCrit.Sts2.Core.Nodes.NGame.Instance ?? (object)CombatManager.Instance);
+
+
+
+                MethodInfo reconMethod = StartDeploymentMethod ?? StartFullAutoDeploymentMethod;
+
+                if (reconMethod != null && host != null && combatState != null && solverResult != null)
+
+                {
+
+                    ParameterInfo[] rParams = reconMethod.GetParameters();
+
+                    if (rParams.Length == 3)
 
                     {
+
+                        object[] reconstructedArgs = new object[] { host, combatState, solverResult };
 
                         IsDeploying = true;
 
                         DeployStartTime = DateTime.UtcNow;
 
-                        GD.Print("[AiTeammate][Coord] Invoking DeployCurrentTurn (0 params) on cached SolverController.");
+                        GD.Print("[AiTeammate][Coord] deploy-args-reconstructed method=" + reconMethod.Name + " params=3 source=reconstruct turn=" + TurnNumber);
 
-                        DeployCurrentTurnMethod.Invoke(target, null);
+                        var res = reconMethod.Invoke(reconMethod.IsStatic ? null : CachedSolverController, reconstructedArgs);
 
-                    }
+                        var task = res as Task;
 
-                    else if (CachedDeployArgs != null && CachedDeployArgs.Length == paramCount)
+                        if (task != null) MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(task);
 
-                    {
-
-                        IsDeploying = true;
-
-                        DeployStartTime = DateTime.UtcNow;
-
-                        GD.Print("[AiTeammate][Coord] Invoking DeployCurrentTurn (" + paramCount + " params) on cached SolverController with captured args.");
-
-                        var task = DeployCurrentTurnMethod.Invoke(target, CachedDeployArgs) as Task;
-
-                        if (task != null)
-
-                        {
-
-                            MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(task);
-
-                        }
+                        return;
 
                     }
 
-                    else
+                }
 
-                    {
 
-                        GD.PrintErr("[AiTeammate][Coord] Cannot trigger cached deployment: parameter count mismatch (method expects " + paramCount + ", cached args " + (CachedDeployArgs != null ? CachedDeployArgs.Length.ToString() : "null") + ")!");
 
-                        TurnFlowPatches.RestorePlayer1ControlIfActive("wakuu-coord-failopen");
+                GD.PrintErr("[AiTeammate][Coord] deploy-args-recovery-failed reason=cannot-reconstruct turn=" + TurnNumber);
 
-                    }
+                if (IsPlayer1Dead())
+
+                {
+
+                    CheckDeadP1ZeroProgressFallback("deploy-reconstruction-failed");
 
                 }
 
                 else
 
                 {
-
-                    GD.PrintErr("[AiTeammate][Coord] Cannot trigger cached deployment: controller or method is null!");
 
                     TurnFlowPatches.RestorePlayer1ControlIfActive("wakuu-coord-failopen");
 
@@ -6859,15 +8101,21 @@ namespace AiTeammate
 
                 GD.PrintErr("[AiTeammate][Coord] TriggerCachedDeployment error: " + ex);
 
-                try
+                if (IsPlayer1Dead())
 
                 {
 
-                    TurnFlowPatches.RestorePlayer1ControlIfActive("wakuu-coord-failopen");
+                    CheckDeadP1ZeroProgressFallback("deploy-exception-failopen");
 
                 }
 
-                catch { }
+                else
+
+                {
+
+                    try { TurnFlowPatches.RestorePlayer1ControlIfActive("wakuu-coord-failopen"); } catch { }
+
+                }
 
             }
 
@@ -7885,11 +9133,1381 @@ namespace AiTeammate
 
 
 
+        // Directive #5.47: P2 Potion continuation & force-end protection
+        public static string ExtractPotionIdFromAction(MegaCrit.Sts2.Core.GameActions.UsePotionAction action)
+        {
+            if (action == null) return "unknown";
+            try
+            {
+                string str = action.ToString();
+                if (!string.IsNullOrEmpty(str))
+                {
+                    int potIdx = str.IndexOf("POTION.");
+                    if (potIdx >= 0)
+                    {
+                        int endIdx = str.IndexOf(' ', potIdx);
+                        if (endIdx > potIdx) return str.Substring(potIdx, endIdx - potIdx);
+                        return str.Substring(potIdx);
+                    }
+                }
+                Player p = action.Player ?? FlowCoordinator.GetPlayer2();
+                if (p != null && p.PotionSlots != null)
+                {
+                    int idx = (int)action.PotionIndex;
+                    if (idx >= 0 && idx < p.PotionSlots.Count)
+                    {
+                        var pot = p.PotionSlots[idx];
+                        if (pot != null && pot.Id != null)
+                        {
+                            return pot.Id.ToString();
+                        }
+                    }
+                }
+            }
+            catch { }
+            return "unknown";
+        }
+
+        // Directive #5.48 Priority 4: Accurate potion completion handler observing actual Task/action terminal state
+        public static void HandlePotionActionCompleted(MegaCrit.Sts2.Core.GameActions.UsePotionAction action, string status, Exception ex)
+        {
+            try
+            {
+                if (action == null) return;
+                ulong p2NetId = GetPlayer2NetId();
+                if (action.OwnerId != p2NetId) return;
+
+                string dedupMarker = string.Format("turn={0}|action={1}", TurnNumber, action.Id);
+                if (LastHandledPotionActionId == (ulong)action.Id && LastPotionContinuationMarker == dedupMarker)
+                {
+                    return; // Deduplicated
+                }
+                LastHandledPotionActionId = (ulong)action.Id;
+                LastPotionContinuationMarker = dedupMarker;
+
+                if (P2PotionOpInFlightCount > 0) P2PotionOpInFlightCount--;
+                ActivePotionId = null;
+                ActivePotionResolvedCard = null;
+
+                Player p2 = FlowCoordinator.GetPlayer2();
+                if (p2 == null) return;
+
+                if (status == "completed")
+                {
+                    var handCards = p2.PlayerCombatState != null && p2.PlayerCombatState.Hand != null ? p2.PlayerCombatState.Hand.Cards : null;
+                    int hand = handCards != null ? handCards.Count : 0;
+                    int energy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-potion-effect-complete owner=P2 hand={0} energy={1} actionId={2}", hand, energy, action.Id));
+                    ScheduleP2PotionContinuation(p2, action.Id.ToString());
+                }
+                else
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-potion-action-{0} actionId={1} owner=P2 reason={2}",
+                        status, action.Id, ex != null ? ex.Message : "canceled"));
+                    PendingPotionContinuation = false;
+                    PotionContinuationScheduled = false;
+                }
+            }
+            catch (Exception ex2)
+            {
+                GD.PrintErr("[AiTeammate][Coord] HandlePotionActionCompleted error: " + ex2);
+            }
+        }
+
+        public static void OnP2PotionEffectComplete(MegaCrit.Sts2.Core.GameActions.UsePotionAction action)
+        {
+            HandlePotionActionCompleted(action, "completed", null);
+        }
+
+        public static void CheckPotionContinuation(string source)
+        {
+            try
+            {
+                if (!PendingPotionContinuation) return;
+                if (!IsInCombat() || !IsPlayPhase())
+                {
+                    PendingPotionContinuation = false;
+                    PotionContinuationScheduled = false;
+                    return;
+                }
+
+                if (PotionContinuationScheduled)
+                {
+                    return;
+                }
+
+                PotionContinuationScheduled = true;
+                Callable.From(delegate {
+                    ExecuteP2PotionContinuation();
+                }).CallDeferred();
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] CheckPotionContinuation exception: " + ex);
+                PotionContinuationScheduled = false;
+            }
+        }
+
+        public static void ScheduleP2PotionContinuation(Player p2, string potionId)
+        {
+            try
+            {
+                if (p2 == null || !IsInCombat() || !IsPlayPhase()) return;
+
+                if (PotionContinuationScheduled)
+                {
+                    GD.Print("[AiTeammate][Coord] p2-potion-continuation-scheduled=false reason=already-scheduled");
+                    return;
+                }
+
+                string potMarker = string.Format("turn={0}|potion={1}", TurnNumber, potionId ?? "unknown");
+                if (LastPotionContinuationMarker == potMarker)
+                {
+                    GD.Print("[AiTeammate][Coord] p2-potion-continuation already scheduled for " + potMarker);
+                    return;
+                }
+                LastPotionContinuationMarker = potMarker;
+                PendingPotionContinuation = true;
+                PotionContinuationTurn = TurnNumber;
+                PotionContinuationRequestTime = DateTime.UtcNow;
+                PotionContinuationRetryCount = 0;
+                PotionContinuationScheduled = true;
+                HasTriggeredPotionContinuationThisTurn = true;
+                PotionContinuationExecutedPlayThisTurn = false;
+                PotionContinuationDeployedThisTurn = false;
+
+                // Dispatch to Godot main thread via CallDeferred
+                Callable.From(delegate {
+                    ExecuteP2PotionContinuation();
+                }).CallDeferred();
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] ScheduleP2PotionContinuation exception: " + ex);
+                PotionContinuationScheduled = false;
+            }
+        }
+
+        public static void ExecuteP2PotionContinuation()
+        {
+            try
+            {
+                if (!IsInCombat() || !IsPlayPhase())
+                {
+                    PendingPotionContinuation = false;
+                    PotionContinuationScheduled = false;
+                    return;
+                }
+
+                Player p2 = FlowCoordinator.GetPlayer2();
+                var cm = CombatManager.Instance;
+                var state = cm != null ? cm.DebugOnlyGetState() : null;
+                if (p2 == null || state == null)
+                {
+                    PendingPotionContinuation = false;
+                    PotionContinuationScheduled = false;
+                    return;
+                }
+
+                PotionContinuationRetryCount++;
+                DateTime now = DateTime.UtcNow;
+                double elapsedSeconds = (now - PotionContinuationRequestTime).TotalSeconds;
+
+                if (PotionContinuationRetryCount > MaxPotionContinuationRetries || elapsedSeconds > MaxPotionContinuationSeconds)
+                {
+                    PendingPotionContinuation = false;
+                    PotionContinuationScheduled = false;
+                    PotionContinuationExecutedPlayThisTurn = true;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-potion-continuation-aborted reason=retry-budget-exhausted attempt={0}", PotionContinuationRetryCount));
+
+                    bool hasAtk;
+                    bool hasCard = P2HasUsableCard(p2, out hasAtk);
+                    int curEnergy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+                    if (hasCard && curEnergy > 0)
+                    {
+                        GD.Print("[AiTeammate][Coord] p2-potion-continuation-aborted: running greedy fallback turn=" + TurnNumber);
+                        TryFallbackGreedy(p2);
+                    }
+                    else
+                    {
+                        GD.Print("[AiTeammate][Coord] p2-potion-continuation-aborted: no playable cards, ending P2 turn");
+                        EnqueueP2EndTurn(p2);
+                    }
+                    return;
+                }
+
+                if (P2PotionOpInFlightCount > 0 || IsPlayer2ActionInFlight())
+                {
+                    if ((now - _lastPotionDeferredLogTime).TotalSeconds >= 1.0)
+                    {
+                        _lastPotionDeferredLogTime = now;
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-potion-continuation-retry attempt={0}", PotionContinuationRetryCount));
+                    }
+                    PotionContinuationScheduled = false;
+                    return;
+                }
+
+                int queueCount = GetP2QueuePlayCardCount(p2.NetId);
+                if (queueCount > 0)
+                {
+                    if ((now - _lastPotionDeferredLogTime).TotalSeconds >= 1.0)
+                    {
+                        _lastPotionDeferredLogTime = now;
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-potion-continuation-retry attempt={0}", PotionContinuationRetryCount));
+                    }
+                    PotionContinuationScheduled = false;
+                    return;
+                }
+
+                // Directive #5.48 Priority 4: Re-read actual P2 hand and current costs, don't deduce no-cards from energy<=0
+                bool hasAttack;
+                bool hasUsableCard = false;
+                var hand = PileType.Hand.GetPile(p2);
+                if (hand != null && hand.Cards != null)
+                {
+                    foreach (var card in hand.Cards)
+                    {
+                        if (card != null && CheckIsPlayable(card) && IsAffordable(card, p2))
+                        {
+                            hasUsableCard = true;
+                            if (IsAttack(card)) hasAttack = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!hasUsableCard)
+                {
+                    PendingPotionContinuation = false;
+                    PotionContinuationScheduled = false;
+                    GD.Print("[AiTeammate][Coord] p2-potion-continuation: no playable cards remaining, ending P2 turn");
+                    EnqueueP2EndTurn(p2);
+                    return;
+                }
+
+                GD.Print("[AiTeammate][Coord] p2-continuation-requested owner=P2 reason=potion-complete");
+
+                // Clean stale deployment session without affecting active actions
+                CleanHangingDeployment();
+                IsDeploying = false;
+                MidDeployStartTime = DateTime.MinValue;
+
+                // Re-arm independent lifeline
+                ArmIndependentP2Lifeline("potion-continuation");
+
+                // Trigger single recalculation for P2
+                PendingPotionContinuation = false;
+                PotionContinuationScheduled = false;
+                KickSolverRecalculation(state, "potion-complete");
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] ExecuteP2PotionContinuation exception: " + ex);
+                PendingPotionContinuation = false;
+                PotionContinuationScheduled = false;
+            }
+        }
+
+        public static void ClearStaleSolverState(string reason)
+        {
+            try
+            {
+                IsDeploying = false;
+                MidDeployStartTime = DateTime.MinValue;
+                CleanHangingDeployment();
+                GD.Print(string.Format("[AiTeammate][Coord] p2-stale-solver-cleared turn={0} reason={1}", TurnNumber, reason ?? "unknown"));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] ClearStaleSolverState exception: " + ex);
+            }
+        }
+
+        // ============================================================================================
+        // Directive #5.91 T1 — CombatSolver per-turn-layer time budget de-truncation.
+        //
+        // CombatSolver divides `searchTimeLimitSeconds` evenly across its 8 turn layers, so 2s gave the
+        // CURRENT turn layer only 250ms. On `completed_turns=0, play_depth=0` the search performs four
+        // synchronous HEAP_RECLAIM GCs (270-364ms of wall clock), which blew that 250ms and truncated the
+        // live turn at `play_depth=1 expanded=1` — the "1 card per turn" (and 0-card) boss turns in the
+        // #5.90 run. Raising the limit to 8s widens the per-layer safety margin to 1000ms; the real stop
+        // boundary stays `boundary=NodeLimit` (searchMaxExpandedNodes=4000, ~0.9-1.4s), so playback speed
+        // is unchanged. `useEarlyTurnExploration` additionally makes the current layer expand first.
+        // ============================================================================================
+        public const int OptimalSolverTimeLimitSeconds = 4;
+        public const int OptimalSolverMaxExpandedNodes = 2500;
+        public const bool OptimalSolverEarlyTurnExploration = false;
+        private static DateTime _lastSolverSettingsDiskSync = DateTime.MinValue;
+        private static bool _solverSettingsEnforcedLogged = false;
+
+        public static void EnsureOptimalCombatSolverSettings()
+        {
+            EnsureOptimalCombatSolverSettings(false);
+        }
+
+        public static void EnsureOptimalCombatSolverSettings(bool forceDiskSync)
+        {
+            bool runtimeFixed = false;
+            bool diskFixed = false;
+            string tlDeclared = "unknown";
+            string nodesDeclared = "unknown";
+            string etDeclared = "unknown";
+
+            // 1) Runtime: mirror the values into CombatSolver.SolverSettings.Current so a search that
+            //    starts before the next Load() already sees them. Pure in-memory property writes - this
+            //    needs no CombatSolver API beyond reflection and cannot invalidate the assembly hash.
+            try
+            {
+                Assembly csAsm = FindCombatSolverAssembly();
+                if (csAsm != null)
+                {
+                    Type settingsType = csAsm.GetType("CombatSolver.SolverSettings");
+                    Type dataType = csAsm.GetType("CombatSolver.SolverSettingsData");
+                    if (settingsType != null && dataType != null)
+                    {
+                        PropertyInfo curProp = settingsType.GetProperty("Current", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                        object data = curProp != null ? curProp.GetValue(null, null) : null;
+                        if (data != null)
+                        {
+                            // Directive #5.92 T1: SearchTimeLimitSeconds is declared
+                            // System.Nullable<System.Double>, NOT Nullable<int> (the #5.91 probe
+                            // conclusion was wrong). The old `raw is int` test was therefore always
+                            // false, `cur` stayed -1, and SetValue(int) threw
+                            // "Object of type 'System.Int32' cannot be converted to type
+                            // 'System.Nullable`1[System.Double]'" on EVERY combat (45 occurrences in
+                            // one session). Convert to the property's real underlying type first.
+                            PropertyInfo tlProp = dataType.GetProperty("SearchTimeLimitSeconds", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (tlProp != null)
+                            {
+                                tlDeclared = DescribeSolverPropType(tlProp);
+                                double cur;
+                                bool hasCur = TryReadSolverNumericSetting(tlProp, data, out cur);
+                                if (!hasCur || cur < 3.5 || cur > 4.5)
+                                {
+                                    if (WriteSolverNumericSetting(tlProp, data, OptimalSolverTimeLimitSeconds))
+                                    {
+                                        runtimeFixed = true;
+                                        GD.Print(string.Format("[AiTeammate] [Diag] solver-settings-runtime-fix field=SearchTimeLimitSeconds declared={0} from={1} to={2}",
+                                            tlDeclared, hasCur ? cur.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null", OptimalSolverTimeLimitSeconds));
+                                    }
+                                }
+                            }
+                            PropertyInfo etProp = dataType.GetProperty("UseEarlyTurnExploration", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (etProp != null)
+                            {
+                                etDeclared = DescribeSolverPropType(etProp);
+                                object raw = etProp.GetValue(data, null);
+                                bool cur = raw is bool && (bool)raw;
+                                if (cur != OptimalSolverEarlyTurnExploration)
+                                {
+                                    etProp.SetValue(data, OptimalSolverEarlyTurnExploration, null);
+                                    runtimeFixed = true;
+                                    GD.Print(string.Format("[AiTeammate] [Diag] solver-settings-runtime-fix field=UseEarlyTurnExploration from={0} to={1}", cur, OptimalSolverEarlyTurnExploration));
+                                }
+                            }
+                            PropertyInfo nodesProp = dataType.GetProperty("SearchMaxExpandedNodes", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (nodesProp != null)
+                            {
+                                nodesDeclared = DescribeSolverPropType(nodesProp);
+                                double curNodes;
+                                bool hasNodes = TryReadSolverNumericSetting(nodesProp, data, out curNodes);
+                                if (!hasNodes || curNodes > 2500 || curNodes < 1500)
+                                {
+                                    if (WriteSolverNumericSetting(nodesProp, data, OptimalSolverMaxExpandedNodes))
+                                    {
+                                        runtimeFixed = true;
+                                        GD.Print(string.Format("[AiTeammate] [Diag] solver-settings-runtime-fix field=SearchMaxExpandedNodes declared={0} from={1} to={2}",
+                                            nodesDeclared, hasNodes ? curNodes.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : "null", OptimalSolverMaxExpandedNodes));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception exRt)
+            {
+                GD.PrintErr("[AiTeammate] [Diag] solver-settings-runtime-fix failed: " + exRt.Message);
+            }
+
+            // 2) Disk: keep %APPDATA%\SlayTheSpire2\combat_solver_settings.json in sync so the next load
+            //    (and the next game session) starts from the same values. Throttled to one read per 30s
+            //    unless forced, so calling this before every search stays cheap.
+            try
+            {
+                if (forceDiskSync || _lastSolverSettingsDiskSync == DateTime.MinValue ||
+                    (DateTime.UtcNow - _lastSolverSettingsDiskSync).TotalSeconds >= 30.0)
+                {
+                    _lastSolverSettingsDiskSync = DateTime.UtcNow;
+                    diskFixed = SyncCombatSolverSettingsFile();
+                }
+            }
+            catch (Exception exDisk)
+            {
+                GD.PrintErr("[AiTeammate] [Diag] solver-settings-disk-sync failed: " + exDisk.Message);
+            }
+
+            if (!_solverSettingsEnforcedLogged)
+            {
+                _solverSettingsEnforcedLogged = true;
+                GD.Print("[AiTeammate] [Diag] solver-settings-enforced timeLimitSec=4 maxNodes=2500 earlyTurnExploration=False");
+                GD.Print("[AiTeammate] [Diag] solver-settings-declared-types timeLimitSeconds=" + tlDeclared + " maxExpandedNodes=" + nodesDeclared + " earlyTurnExploration=" + etDeclared);
+            }
+            if (runtimeFixed || diskFixed)
+            {
+                GD.Print(string.Format("[AiTeammate] [Diag] solver-settings-applied runtimeFixed={0} diskFixed={1}", runtimeFixed, diskFixed));
+            }
+        }
+
+        // Directive #5.92 T1: CombatSolver declares SearchTimeLimitSeconds / SearchMaxExpandedNodes as
+        // Nullable<T>. Writing a plain boxed int/double to a Nullable<T> property throws
+        // ArgumentException ("Object of type 'X' cannot be converted to type 'Nullable`1[Y]'"), which is
+        // exactly the 45-per-session failure the #5.91 build produced. Every numeric write is converted
+        // to the property's real underlying type first; every read tolerates null.
+        private static Type SolverSettingUnderlyingType(PropertyInfo prop)
+        {
+            if (prop == null) return null;
+            try { return Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType; }
+            catch { return null; }
+        }
+
+        private static string DescribeSolverPropType(PropertyInfo prop)
+        {
+            try
+            {
+                if (prop == null) return "missing";
+                Type u = Nullable.GetUnderlyingType(prop.PropertyType);
+                return u != null ? "Nullable<" + u.Name + ">" : prop.PropertyType.Name;
+            }
+            catch { return "unknown"; }
+        }
+
+        private static bool TryReadSolverNumericSetting(PropertyInfo prop, object target, out double value)
+        {
+            value = 0.0;
+            try
+            {
+                if (prop == null || target == null) return false;
+                object raw = prop.GetValue(target, null);
+                if (raw == null) return false;
+                value = Convert.ToDouble(raw, System.Globalization.CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static bool WriteSolverNumericSetting(PropertyInfo prop, object target, double value)
+        {
+            try
+            {
+                if (prop == null || target == null) return false;
+                Type underlying = SolverSettingUnderlyingType(prop);
+                if (underlying == null) return false;
+                object boxed = Convert.ChangeType(value, underlying, System.Globalization.CultureInfo.InvariantCulture);
+                prop.SetValue(target, boxed, null);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Deliberately NOT tagged "solver-settings-runtime-fix failed": the verification greps
+                // that exact phrase and it must only ever come from the outer guard.
+                GD.PrintErr("[AiTeammate] [Diag] solver-settings-numeric-write-failed field=" + (prop != null ? prop.Name : "?") + " reason=" + ex.Message);
+                return false;
+            }
+        }
+
+        public static Assembly FindCombatSolverAssembly()
+        {
+            try
+            {
+                Assembly[] asms = AppDomain.CurrentDomain.GetAssemblies();
+                for (int i = 0; i < asms.Length; i++)
+                {
+                    Assembly a = asms[i];
+                    if (a == null) continue;
+                    string n = a.GetName().Name;
+                    if (n == "CombatSolver") return a;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        public static Assembly FindDualRoleAdventureAssembly()
+        {
+            try
+            {
+                Assembly[] asms = AppDomain.CurrentDomain.GetAssemblies();
+                for (int i = 0; i < asms.Length; i++)
+                {
+                    Assembly a = asms[i];
+                    if (a == null) continue;
+                    string n = a.GetName().Name;
+                    if (n == "DualRoleAdventure") return a;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string GetCombatSolverSettingsPath()
+        {
+            try
+            {
+                string appData = null;
+                try { appData = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData); }
+                catch { }
+                string primary = !string.IsNullOrEmpty(appData)
+                    ? System.IO.Path.Combine(appData, "SlayTheSpire2", "combat_solver_settings.json")
+                    : null;
+                if (primary != null && System.IO.File.Exists(primary)) return primary;
+                string userDir = null;
+                try { userDir = OS.GetUserDataDir(); }
+                catch { }
+                if (!string.IsNullOrEmpty(userDir))
+                {
+                    string alt = System.IO.Path.Combine(userDir, "combat_solver_settings.json");
+                    if (System.IO.File.Exists(alt)) return alt;
+                }
+                return primary;
+            }
+            catch { return null; }
+        }
+
+        // Text-level patch: preserves every other key, the key order and the file formatting. A full
+        // JSON round-trip would re-serialize CombatSolver's own DTO and could drop unknown fields.
+        private static string PatchCombatSolverSettingsJson(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return json;
+            string result = json;
+            try
+            {
+                System.Text.RegularExpressions.Regex numRe = new System.Text.RegularExpressions.Regex(
+                    "\"searchTimeLimitSeconds\"(\\s*:\\s*)(-?[0-9]+(?:\\.[0-9]+)?|null)");
+                System.Text.RegularExpressions.Match m = numRe.Match(result);
+                if (m.Success)
+                {
+                    string raw = m.Groups[2].Value;
+                    double parsed = 0.0;
+                    bool ok = !string.Equals(raw, "null", StringComparison.OrdinalIgnoreCase) &&
+                              double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out parsed);
+                    if (!ok || parsed < 3.5 || parsed > 4.5)
+                    {
+                        result = numRe.Replace(result, "\"searchTimeLimitSeconds\"" + m.Groups[1].Value + OptimalSolverTimeLimitSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture), 1);
+                    }
+                }
+                System.Text.RegularExpressions.Regex boolRe = new System.Text.RegularExpressions.Regex(
+                    "\"useEarlyTurnExploration\"(\\s*:\\s*)(true|false)");
+                System.Text.RegularExpressions.Match bm = boolRe.Match(result);
+                if (bm.Success && string.Equals(bm.Groups[2].Value, "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    result = boolRe.Replace(result, "\"useEarlyTurnExploration\"" + bm.Groups[1].Value + "false", 1);
+                }
+                System.Text.RegularExpressions.Regex nodesRe = new System.Text.RegularExpressions.Regex(
+                    "\"searchMaxExpandedNodes\"(\\s*:\\s*)(-?[0-9]+|null)");
+                System.Text.RegularExpressions.Match nm = nodesRe.Match(result);
+                if (nm.Success)
+                {
+                    string raw = nm.Groups[2].Value;
+                    int parsed = 0;
+                    bool ok = !string.Equals(raw, "null", StringComparison.OrdinalIgnoreCase) &&
+                              int.TryParse(raw, out parsed);
+                    if (!ok || parsed > 2500 || parsed < 1500)
+                    {
+                        result = nodesRe.Replace(result, "\"searchMaxExpandedNodes\"" + nm.Groups[1].Value + OptimalSolverMaxExpandedNodes.ToString(System.Globalization.CultureInfo.InvariantCulture), 1);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate] [Diag] solver-settings-json-patch failed: " + ex.Message);
+                return json;
+            }
+            return result;
+        }
+
+        private static bool SyncCombatSolverSettingsFile()
+        {
+            string path = GetCombatSolverSettingsPath();
+            if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) return false;
+            string json = System.IO.File.ReadAllText(path);
+            string patched = PatchCombatSolverSettingsJson(json);
+            if (patched == null || string.Equals(patched, json, StringComparison.Ordinal)) return false;
+            string tmp = path + ".aiteammate.tmp";
+            System.IO.File.WriteAllText(tmp, patched);
+            try { System.IO.File.Copy(path, path + ".aiteammate.bak", true); }
+            catch { }
+            System.IO.File.Copy(tmp, path, true);
+            try { System.IO.File.Delete(tmp); }
+            catch { }
+            GD.Print(string.Format("[AiTeammate] [Diag] solver-settings-disk-fix path={0} timeLimitSec={1} maxNodes={2} earlyTurnExploration={3}", path, OptimalSolverTimeLimitSeconds, OptimalSolverMaxExpandedNodes, OptimalSolverEarlyTurnExploration));
+            return true;
+        }
+
+        // ============================================================================================
+        // Directive #5.92 T3 - CombatSolver battle log archiver.
+        //
+        // CombatSolver keeps only the most recent combat-*.jsonl per session, so the next battle
+        // destroys the evidence needed to attribute the previous one (the 23:25 session played 4
+        // battles and only the last jsonl survived). This copies them out ONE WAY into
+        // %APPDATA%\SlayTheSpire2\logs\CombatSolverArchive\ and trims the archive to the newest 10.
+        // Source files are opened read-only and never modified, moved or deleted.
+        // ============================================================================================
+        public const int SolverLogArchiveKeepCount = 10;
+        private static readonly HashSet<string> _solverLogArchivedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Directive #5.92 T3: edge detector + bounded retry. CombatSolver may still hold the jsonl open
+        // for a few hundred ms after the last enemy dies, so the falling edge arms a short retry window
+        // (6 x 250ms timer ticks). ArchiveCombatSolverLogs dedups by file name, so repeated attempts are
+        // free once the file has been copied.
+        private static bool _wasInCombatForLogArchive = false;
+        private static int _combatLogArchivePendingTicks = 0;
+
+        // Called from the SetUpCombat prefix so the edge detector starts each battle already "inside"
+        // combat (otherwise the first tick after a battle start could look like a falling edge).
+        public static void NotifyCombatStartForLogArchive()
+        {
+            _wasInCombatForLogArchive = true;
+            _combatLogArchivePendingTicks = 0;
+        }
+
+        public static void CheckCombatEndedForLogArchive()
+        {
+            bool nowInCombat = IsInCombat();
+            if (_wasInCombatForLogArchive && !nowInCombat) _combatLogArchivePendingTicks = 6;
+            _wasInCombatForLogArchive = nowInCombat;
+            if (_combatLogArchivePendingTicks > 0)
+            {
+                _combatLogArchivePendingTicks--;
+                ArchiveCombatSolverLogs();
+            }
+        }
+
+        public static void ArchiveCombatSolverLogs()
+        {
+            try
+            {
+                string appData = null;
+                try { appData = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData); }
+                catch { }
+                if (string.IsNullOrEmpty(appData)) return;
+                string root = System.IO.Path.Combine(appData, "SlayTheSpire2", "logs", "CombatSolver");
+                if (!System.IO.Directory.Exists(root)) return;
+                string archive = System.IO.Path.Combine(appData, "SlayTheSpire2", "logs", "CombatSolverArchive");
+
+                List<string> copied = new List<string>();
+                // Only the CURRENT session directory (<pid>-<hash>), picked as the most recently written
+                // one: process.jsonl in it is appended to continuously while the game runs. The root also
+                // holds every PREVIOUS session's directory, and copying all of them would dump dozens of
+                // unrelated battles into the archive on the first call and immediately trim most away.
+                string sessionDir = null;
+                try
+                {
+                    string[] dirs = System.IO.Directory.GetDirectories(root);
+                    DateTime newest = DateTime.MinValue;
+                    for (int i = 0; i < dirs.Length; i++)
+                    {
+                        // Directory mtime does NOT change when a contained file is appended to, so the
+                        // "most recent session" decision has to look at the files themselves.
+                        DateTime stamp = System.IO.Directory.GetLastWriteTimeUtc(dirs[i]);
+                        try
+                        {
+                            string[] probe = System.IO.Directory.GetFiles(dirs[i], "*.jsonl");
+                            for (int j = 0; j < probe.Length; j++)
+                            {
+                                DateTime ft = System.IO.File.GetLastWriteTimeUtc(probe[j]);
+                                if (ft > stamp) stamp = ft;
+                            }
+                        }
+                        catch { }
+                        if (stamp > newest) { newest = stamp; sessionDir = dirs[i]; }
+                    }
+                }
+                catch { }
+                if (string.IsNullOrEmpty(sessionDir)) return;
+                string[] files = System.IO.Directory.GetFiles(sessionDir, "combat-*.jsonl");
+                for (int f = 0; f < files.Length; f++)
+                {
+                    try
+                    {
+                        string name = System.IO.Path.GetFileName(files[f]);
+                        string dest = System.IO.Path.Combine(archive, name);
+                        // One copy per battle: the file for the CURRENT battle is created after this
+                        // hook runs, so whatever is on disk here is a completed battle.
+                        if (_solverLogArchivedNames.Contains(name) && System.IO.File.Exists(dest)) continue;
+                        System.IO.Directory.CreateDirectory(archive);
+                        System.IO.File.Copy(files[f], dest, true);
+                        System.IO.FileInfo fi = new System.IO.FileInfo(dest);
+                        _solverLogArchivedNames.Add(name);
+                        copied.Add(name + "|" + fi.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    catch (Exception exOne)
+                    {
+                        GD.PrintErr("[AiTeammate] [Diag] solver-log-archive-skip file=" + System.IO.Path.GetFileName(files[f]) + " reason=" + exOne.Message);
+                    }
+                }
+
+                string[] archived = System.IO.Directory.Exists(archive)
+                    ? System.IO.Directory.GetFiles(archive, "combat-*.jsonl")
+                    : new string[0];
+                if (archived.Length > SolverLogArchiveKeepCount)
+                {
+                    // File.Copy preserves LastWriteTime, so this orders by ORIGINAL battle time.
+                    Array.Sort(archived, delegate (string a, string b)
+                    {
+                        return System.IO.File.GetLastWriteTimeUtc(a).CompareTo(System.IO.File.GetLastWriteTimeUtc(b));
+                    });
+                    int toDelete = archived.Length - SolverLogArchiveKeepCount;
+                    for (int i = 0; i < toDelete; i++)
+                    {
+                        try { System.IO.File.Delete(archived[i]); }
+                        catch (Exception exDel) { GD.PrintErr("[AiTeammate] [Diag] solver-log-archive-trim-failed file=" + System.IO.Path.GetFileName(archived[i]) + " reason=" + exDel.Message); }
+                    }
+                    archived = System.IO.Directory.GetFiles(archive, "combat-*.jsonl");
+                }
+
+                int kept = archived.Length;
+                for (int i = 0; i < copied.Count; i++)
+                {
+                    string[] parts = copied[i].Split('|');
+                    GD.Print(string.Format("[AiTeammate] [Diag] solver-log-archived file={0} size={1} kept={2}", parts[0], parts[1], kept));
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate] [Diag] solver-log-archive-failed reason=" + ex.Message);
+            }
+        }
+
+        public static bool IsSolverGenuinelyActive(Player p2, int queueCount, bool inflight, out string staleReason)
+        {
+            staleReason = null;
+            DateTime now = DateTime.UtcNow;
+
+            if (inflight) return true;
+            if (queueCount > 0) return true;
+
+            if (PlanEmptyRecoveryInProgress && (now - PlanEmptyRecoveryStartTime).TotalSeconds < 3.0)
+            {
+                return true;
+            }
+
+            bool isSearching = IsSolverSearching();
+            bool isDeploying = IsSolverDeploying() || IsDeploying;
+
+            if (!isSearching && !isDeploying)
+            {
+                return false;
+            }
+
+            // Check if solver is stale:
+            // A. Deployment already completed this turn, queue is empty, no action in flight
+            // Directive #5.90 T1.3: never declare an ACTIVELY SEARCHING solver stale just because an
+            // earlier deployment completed in the same turn. ResetTurnState("OnEndedTurnLocally") (P1
+            // pressing End Turn) sets HasCompletedDeploymentThisTurn=true mid-round, which used to kill
+            // P2's live search with staleReason=deployment-already-completed and fire greedy while
+            // solverActive=True.
+            if (HasCompletedDeploymentThisTurn && !isSearching && queueCount == 0 && !inflight)
+            {
+                staleReason = "deployment-already-completed";
+                return false;
+            }
+
+            // B. Plan-empty confirmed, queue is empty, no action in flight
+            if (SolverEarlyEndReportedThisTurn && queueCount == 0 && !inflight)
+            {
+                staleReason = "plan-empty-confirmed";
+                return false;
+            }
+
+            // C. Search heartbeat missed (> 5s) or search duration exceeded (> 8s)
+            if (isSearching)
+            {
+                if (LastSearchHeartbeatTime != DateTime.MinValue && (now - LastSearchHeartbeatTime).TotalSeconds >= 5.0)
+                {
+                    staleReason = "search-heartbeat-missed";
+                    return false;
+                }
+                if (SearchAliveStartTime != DateTime.MinValue && (now - SearchAliveStartTime).TotalSeconds >= 8.0)
+                {
+                    staleReason = "search-duration-exceeded";
+                    return false;
+                }
+            }
+
+            // D. Deployment hung with no actions in flight and empty queue
+            if (isDeploying)
+            {
+                if (DeployStartTime != DateTime.MinValue && (now - DeployStartTime).TotalSeconds >= 2.0 && queueCount == 0 && !inflight)
+                {
+                    staleReason = "deploy-no-actions-timeout";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static string _lastFallbackDeferLogKey = null;
+
+        public static bool TriggerP2Fallback(Player p2, CombatState state)
+        {
+            return TriggerP2Fallback(p2, state, "unspecified");
+        }
+
+        // Directive #5.91 T3.2: returns TRUE only when greedy actually enqueued card actions.
+        public static bool TriggerP2Fallback(Player p2, CombatState state, string trigger)
+        {
+            if (p2 == null || P2FallbackExecutedThisTurn || P2FallbackExhaustedThisTurn) return false;
+
+            // #5.91 T3.2: never latch P2FallbackExecutedThisTurn while CombatSolver still owns the turn.
+            // The #5.90 watchdog called this at 1.2s while the recalc was still searching;
+            // TryFallbackGreedy then refused (solver-active) but the "executed" latch was already set,
+            // so CheckP2EndTurnGate later allowed EndTurn with reason=recovery-exhausted without a
+            // single greedy card ever being played (RC-3). Latch only the "requested" flag and let a
+            // later watchdog/gate pass do the real attempt.
+            if (IsSolverSearching() || IsSolverDeploying() || IsDeploying)
+            {
+                PlanEmptyFallbackRequestedThisTurn = true;
+                string key = (trigger ?? "unspecified") + "|" + TurnNumber;
+                if (!string.Equals(_lastFallbackDeferLogKey, key, StringComparison.Ordinal))
+                {
+                    _lastFallbackDeferLogKey = key;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-fallback-deferred reason=solver-active trigger={0} searching={1} deploying={2} turn={3}",
+                        trigger ?? "unspecified", IsSolverSearching(), IsSolverDeploying() || IsDeploying, TurnNumber));
+                }
+                return false;
+            }
+
+            P2FallbackExecutedThisTurn = true;
+            PlanEmptyFallbackRequestedThisTurn = true;
+
+            int energy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+            int hand = GetPlayerHandCardCount(p2);
+
+            GD.Print(string.Format("[AiTeammate][Coord] p2-fallback-start turn={0} hand={1} energy={2} trigger={3}", TurnNumber, hand, energy, trigger ?? "unspecified"));
+
+            bool enqueued = TryFallbackGreedy(p2);
+            if (!enqueued && (IsSolverSearching() || IsSolverDeploying() || IsDeploying))
+            {
+                // Directive #5.90 T1.3: greedy refused because CombatSolver still owns the turn. Do not
+                // latch "exhausted" and do not force an end turn - hand the turn back to the solver.
+                P2FallbackExecutedThisTurn = false;
+                GD.Print(string.Format("[AiTeammate][Coord] p2-fallback-deferred reason=solver-active turn={0}", TurnNumber));
+                return false;
+            }
+            if (!enqueued)
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] p2-fallback-exhausted turn={0}", TurnNumber));
+                P2FallbackExhaustedThisTurn = true;
+                LogFallbackExhaustedSet("p2-fallback-exhausted");
+                PlanEmptyRecoveryInProgress = false;
+                EnqueueP2EndTurn(p2);
+                return false;
+            }
+            return true;
+        }
+
+        // Directive #5.92 T2.2: one-shot continuation attempt driven from CompleteDeploymentPostfix -
+        // the only moment where (a) the solver's own EndTurn has already been suppressed by the gate and
+        // (b) deployment is genuinely over, so TryFallbackGreedy's solver-active guard can pass.
+        // Contract: every exit either plays cards or explicitly re-arms EndTurn, so a deferred EndTurn can
+        // never turn into a stalled P2 turn. The flag is burned BEFORE any work so it cannot re-enter.
+        public static void TryRunPostDeployContinuation()
+        {
+            if (!P2PendingPostDeployContinuation) return;
+            P2PendingPostDeployContinuation = false;
+            DateTime since = P2PendingPostDeployContinuationSince;
+            P2PendingPostDeployContinuationSince = DateTime.MinValue;
+            P2PendingPostDeployContinuationTurn = -1;
+            double waited = since != DateTime.MinValue ? (DateTime.UtcNow - since).TotalSeconds : 0.0;
+            string stage = "entry";
+            try
+            {
+                CombatState cs = CombatManager.Instance != null ? CombatManager.Instance.DebugOnlyGetState() : null;
+                Player p2 = (cs != null && cs.Players != null && cs.Players.Count > 1) ? cs.Players[cs.Players.Count - 1] : null;
+                if (p2 == null || cs == null || !IsInCombat() || !IsPlayPhase())
+                {
+                    GD.Print("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=conditions-changed detail=not-in-play-phase turn=" + TurnNumber);
+                    return;
+                }
+                if (P2FallbackExecutedThisTurn || P2FallbackExhaustedThisTurn)
+                {
+                    GD.Print("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=conditions-changed detail=fallback-already-used turn=" + TurnNumber);
+                    return;
+                }
+                if (!P2SuspectTruncatedAfterOneCardThisTurn && P2PlayedCardsThisTurn > P2PlayedCardsAtRecalcStart)
+                {
+                    GD.Print("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=conditions-changed detail=cards-already-played turn=" + TurnNumber);
+                    return;
+                }
+                if (HasSolverSatisfiedTurnPlan(p2, cs))
+                {
+                    GD.Print("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=conditions-changed detail=plan-satisfied turn=" + TurnNumber);
+                    EnqueueP2EndTurn(p2);
+                    return;
+                }
+                stage = "solver-busy-check";
+                if (IsSolverSearching() || IsSolverDeploying() || IsDeploying)
+                {
+                    // A fresh search took over. Hand the turn back explicitly - the gate swallowed the
+                    // solver's original EndTurn, so nothing else would end this turn.
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=conditions-changed detail=solver-busy searching={0} deploying={1} turn={2}",
+                        IsSolverSearching(), IsSolverDeploying() || IsDeploying, TurnNumber));
+                    EnqueueP2EndTurn(p2);
+                    return;
+                }
+                stage = "playability-check";
+                bool hasAtk;
+                if (!P2HasMeaningfulPlayable(p2, out hasAtk))
+                {
+                    GD.Print("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=no-playables turn=" + TurnNumber);
+                    EnqueueP2EndTurn(p2);
+                    return;
+                }
+                stage = "greedy";
+                int hand = GetPlayerHandCardCount(p2);
+                int energy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+                bool played = TriggerP2Fallback(p2, cs, "postdeploy-continuation");
+                if (played)
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-postdeploy-continuation played=True enqueued={0} hand={1} energy={2} waited={3:F2}s turn={4}",
+                        GetP2QueuePlayCardCount(p2.NetId), hand, energy, waited, TurnNumber));
+                }
+                else
+                {
+                    // TriggerP2Fallback's exhausted branch already enqueued the EndTurn for us.
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-postdeploy-continuation skipped reason=no-playables detail=greedy-declined hand={0} energy={1} waited={2:F2}s turn={3}",
+                        hand, energy, waited, TurnNumber));
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] p2-postdeploy-continuation-failed reason=" + ex.Message + " stage=" + stage + " turn=" + TurnNumber);
+                // Fail-open: never leave a swallowed EndTurn behind.
+                try
+                {
+                    Player p2f = FlowCoordinator.GetPlayer2();
+                    if (p2f != null) EnqueueP2EndTurn(p2f);
+                }
+                catch { }
+            }
+        }
+
+        // Directive #5.92 T2.1: gate-side half of the post-deploy continuation.
+        // Returns 0 = not applicable (gate continues normally), 1 = DEFER (gate returns false),
+        //         2 = ALLOW (gate returns true, safety valve fired).
+        // Business conditions mirror #5.91 T3.3 exactly; the only difference is that the solver is still
+        // deploying, which is precisely why T3.3's idle guard could never match this timing.
+        private static int TryHandleRecalcEmptyDeployingContinuation(Player p2, string caller, int queueCount, bool inflight, int hand, int energy, bool solverPlanSatisfied, bool genuinelyActive)
+        {
+            try
+            {
+                bool isRecalcEmpty = PlanEmptyRecoveryAttemptedThisTurn && (P2PlayedCardsThisTurn <= P2PlayedCardsAtRecalcStart);
+                bool isSuspectTruncated = P2SuspectTruncatedAfterOneCardThisTurn && (P2PlayedCardsThisTurn >= 1);
+                if (!isRecalcEmpty && !isSuspectTruncated) return 0;
+                if (P2FallbackExecutedThisTurn || P2FallbackExhaustedThisTurn) return 0;
+                if (solverPlanSatisfied || genuinelyActive || queueCount > 0 || inflight) return 0;
+                if (!(IsSolverDeploying() || IsDeploying)) return 0;
+                bool hasAttackIgnored;
+                if (!P2HasMeaningfulPlayable(p2, out hasAttackIgnored)) return 0;
+
+                bool sameTurnPending = P2PendingPostDeployContinuation && P2PendingPostDeployContinuationTurn == TurnNumber;
+                double waitedSec = (sameTurnPending && P2PendingPostDeployContinuationSince != DateTime.MinValue)
+                    ? (DateTime.UtcNow - P2PendingPostDeployContinuationSince).TotalSeconds : 0.0;
+
+                // Hard safety valve: never hold the EndTurn for more than 5s. Deployment stalls and the
+                // 12s watchdog are both worse than one empty turn, so this always fails open.
+                if (sameTurnPending && waitedSec >= P2PostDeployContinuationTimeoutSeconds)
+                {
+                    P2PendingPostDeployContinuation = false;
+                    P2PendingPostDeployContinuationSince = DateTime.MinValue;
+                    P2PendingPostDeployContinuationTurn = -1;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=allow reason=deploying-continuation-timeout caller={0} hand={1} energy={2} queue={3} inflight={4} waited={5:F1}s turn={6}",
+                        caller ?? "unknown", hand, energy, queueCount, inflight, waitedSec, TurnNumber));
+                    return 2;
+                }
+                if (!sameTurnPending)
+                {
+                    P2PendingPostDeployContinuation = true;
+                    P2PendingPostDeployContinuationSince = DateTime.UtcNow;
+                    P2PendingPostDeployContinuationTurn = TurnNumber;
+                }
+                GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=defer reason=deploying-recalc-empty-continuation caller={0} hand={1} energy={2} played={3} played-at-recalc={4} queue={5} inflight={6} waited={7:F1}s turn={8}",
+                    caller ?? "unknown", hand, energy, P2PlayedCardsThisTurn, P2PlayedCardsAtRecalcStart, queueCount, inflight, waitedSec, TurnNumber));
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                // Fail-open: a brand-new code path must never be the reason a P2 turn locks up.
+                GD.PrintErr("[AiTeammate][Coord] p2-endturn-gate deploy-continuation check failed: " + ex.Message);
+                return 0;
+            }
+        }
+
+        public static void ExecutePlanEmptyRecovery(Player p2, CombatState state, string trigger)
+        {
+            try
+            {
+                if (p2 == null || !IsInCombat() || !IsPlayPhase()) return;
+                if (P2FallbackExhaustedThisTurn) return;
+                if (PlanEmptyRecoveryAttemptedThisTurn)
+                {
+                    // Directive #5.91 T3.1: while the recalc is still in flight the watchdog owns the
+                    // timing (1.2s idle grace / 8.5s hard cap). Preempting here re-introduced the exact
+                    // 1.2s race that latched P2FallbackExecutedThisTurn while TryFallbackGreedy refused.
+                    if (!P2FallbackExecutedThisTurn && !PlanEmptyRecoveryInProgress
+                        && !IsSolverSearching() && !IsSolverDeploying() && !IsDeploying)
+                    {
+                        TriggerP2Fallback(p2, state, "recovery-already-attempted");
+                    }
+                    return;
+                }
+
+                bool hasAtk;
+                bool playable = P2HasUsableCard(p2, out hasAtk);
+                int energy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+                int hand = GetPlayerHandCardCount(p2);
+
+                if (!playable || energy <= 0)
+                {
+                    PlanEmptyRecoveryAttemptedThisTurn = true;
+                    P2FallbackExhaustedThisTurn = true;
+                    LogFallbackExhaustedSet("plan-empty-recovery-skipped");
+                    PlanEmptyRecoveryInProgress = false;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-recovery-skipped reason={0} turn={1}", 
+                        !playable ? "no-playable-cards" : "no-energy", TurnNumber));
+                    return;
+                }
+
+                ulong p2NetId = p2.NetId;
+                int queueCount = GetP2QueuePlayCardCount(p2NetId);
+                bool inflight = IsPlayer2ActionInFlight();
+                if (queueCount > 0 || inflight) return;
+
+                PlanEmptyRecoveryAttemptedThisTurn = true;
+                PlanEmptyRecoveryInProgress = true;
+                PlanEmptyRecoveryStartTime = DateTime.UtcNow;
+                // Directive #5.91 T3.3: baseline for "the recalc produced no NEW card".
+                P2PlayedCardsAtRecalcStart = P2PlayedCardsThisTurn;
+
+                GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-recovery-start turn={0} hand={1} energy={2}", TurnNumber, hand, energy));
+
+                // 1. Clean current stale deployment/search session
+                ClearStaleSolverState("plan-empty-recovery");
+
+                // 2. Request new P2 RequestSearch once
+                PlanEmptyRecalcRequestedThisTurn = true;
+                GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-recalc-requested turn={0}", TurnNumber));
+
+                if (state == null)
+                {
+                    var cm = CombatManager.Instance;
+                    if (cm != null) state = cm.DebugOnlyGetState();
+                }
+
+                lock (LifelineGate)
+                {
+                    IndependentLifelineStartTime = DateTime.UtcNow;
+                    IndependentLifelineFired = false;
+                }
+
+                RequestRecalculation(state, "plan-empty-retry");
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] ExecutePlanEmptyRecovery exception: " + ex);
+                PlanEmptyRecoveryInProgress = false;
+            }
+        }
+
+        public static void CheckPlanEmptyRecoveryWatchdog(DateTime now)
+        {
+            try
+            {
+                if (!IsInCombat() || !IsPlayPhase()) return;
+
+                // Directive #5.48 Priority 2: Pause P2 recovery while P1 is gathering player choice
+                if (IsPlayer1InChoiceScreen())
+                {
+                    if (PlanEmptyRecoveryStartTime != DateTime.MinValue)
+                    {
+                        PlanEmptyRecoveryStartTime = DateTime.UtcNow; // Preserve budget
+                    }
+                    if (P2FallbackExhaustedThisTurn)
+                    {
+                        P2PendingEndTurnWakeup = true;
+                        GD.Print("[AiTeammate][Coord] p2-force-end-blocked owner=P2 reason=p1-gathering-choice");
+                    }
+                    return;
+                }
+
+                Player p2 = FlowCoordinator.GetPlayer2();
+                if (p2 == null || p2.PlayerCombatState == null) return;
+
+                if (P2FallbackExhaustedThisTurn)
+                {
+                    var cm = CombatManager.Instance;
+                    if (cm != null && !cm.IsPlayerReadyToEndTurn(p2))
+                    {
+                        EnqueueP2EndTurn(p2);
+                    }
+                    return;
+                }
+
+                int energy = p2.PlayerCombatState.Energy;
+                if (energy <= 0)
+                {
+                    if (PlanEmptyRecoveryInProgress || PlanEmptyRecoveryAttemptedThisTurn)
+                    {
+                        P2FallbackExhaustedThisTurn = true;
+                        LogFallbackExhaustedSet("plan-empty-exhausted-no-energy");
+                        PlanEmptyRecoveryInProgress = false;
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-exhausted turn={0}", TurnNumber));
+                        EnqueueP2EndTurn(p2);
+                    }
+                    return;
+                }
+
+                bool hasAtk;
+                bool hasUsable = P2HasUsableCard(p2, out hasAtk);
+                if (!hasUsable)
+                {
+                    if (PlanEmptyRecoveryInProgress || PlanEmptyRecoveryAttemptedThisTurn)
+                    {
+                        P2FallbackExhaustedThisTurn = true;
+                        LogFallbackExhaustedSet("plan-empty-exhausted-no-usable");
+                        PlanEmptyRecoveryInProgress = false;
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-exhausted turn={0}", TurnNumber));
+                        EnqueueP2EndTurn(p2);
+                    }
+                    return;
+                }
+
+                ulong p2NetId = p2.NetId;
+                int queueCount = GetP2QueuePlayCardCount(p2NetId);
+                bool inflight = IsPlayer2ActionInFlight();
+                if (queueCount > 0 || inflight) return;
+
+                string staleReason;
+                bool genuinelyActive = IsSolverGenuinelyActive(p2, queueCount, inflight, out staleReason);
+                if (!genuinelyActive && staleReason != null)
+                {
+                    ClearStaleSolverState(staleReason);
+                }
+
+                if (PlanEmptyRecoveryInProgress)
+                {
+                    if (PlanEmptyRecalcRequestedThisTurn && !P2FallbackExecutedThisTurn)
+                    {
+                        double elapsed = (now - PlanEmptyRecoveryStartTime).TotalSeconds;
+                        bool solverBusy = IsSolverSearching() || IsSolverDeploying() || IsDeploying;
+                        if (solverBusy)
+                        {
+                            // Directive #5.91 T3.1: do NOT preempt an in-flight recalc. The old 1.2s
+                            // timeout fired while CombatSolver was still searching; TryFallbackGreedy
+                            // then refused (solver-active) while TriggerP2Fallback had already latched
+                            // P2FallbackExecutedThisTurn=true, which later let the gate allow EndTurn with
+                            // reason=recovery-exhausted without one greedy card being played. Wait for
+                            // the search to finish, with 8.5s as an absolute safety cap.
+                            if (elapsed >= PlanEmptyRecoveryHardCapSeconds)
+                            {
+                                GD.Print(string.Format("[AiTeammate][Coord] plan-empty-recovery-hard-cap elapsed={0:F2}s turn={1}", elapsed, TurnNumber));
+                                var csHard = CombatManager.Instance != null ? CombatManager.Instance.DebugOnlyGetState() : null;
+                                TriggerP2Fallback(p2, csHard, "recovery-hard-cap");
+                            }
+                        }
+                        else if (elapsed >= 1.2)
+                        {
+                            // Solver finished and P2 still produced nothing: one real greedy attempt.
+                            var csIdle = CombatManager.Instance != null ? CombatManager.Instance.DebugOnlyGetState() : null;
+                            TriggerP2Fallback(p2, csIdle, "recovery-idle-timeout");
+                        }
+                    }
+                    return;
+                }
+
+                if (!PlanEmptyRecoveryAttemptedThisTurn && HasCompletedDeploymentThisTurn && !genuinelyActive)
+                {
+                    var cm = CombatManager.Instance;
+                    var cs = cm != null ? cm.DebugOnlyGetState() : null;
+                    // Directive #5.90 T1: never start plan-empty recovery when the solver already
+                    // satisfied its plan for this turn.
+                    if (HasSolverSatisfiedTurnPlan(p2, cs))
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] plan-empty-recovery-suppressed reason=plan-satisfied plan-len={0} planned={1} played={2} enqueued={3} turn={4}", P2PlanLengthThisTurn, P2PlannedCardActionsThisTurn, P2PlayedCardsThisTurn, P2EnqueuedCardActionsThisTurn, TurnNumber));
+                    }
+                    else
+                    {
+                        ExecutePlanEmptyRecovery(p2, cs, "tick-watchdog");
+                    }
+                }
+                else if (IsPlayer1Dead() && !IsPlayer2Dead() && (PlanEmptyRecoveryAttemptedThisTurn || HasCompletedDeploymentThisTurn) && !genuinelyActive)
+                {
+                    CheckDeadP1ZeroProgressFallback("watchdog-dead-p1");
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] CheckPlanEmptyRecoveryWatchdog exception: " + ex);
+            }
+        }
+
+        public static bool CheckForceEndTurnGuard(CombatManager cm, CombatState state, Player player2, string triggerSource, out string blockReason)
+        {
+            blockReason = null;
+            if (AreAllPlayersDead() || IsTerminalCombatFinalized)
+            {
+                blockReason = "all-players-dead";
+                LogTerminalCombatFinalized("all-players-dead");
+                return false;
+            }
+            try
+            {
+                if (player2 == null) return true;
+
+                // 1. P2PotionOpInFlightCount > 0
+                if (P2PotionOpInFlightCount > 0)
+                {
+                    blockReason = "potion-op-in-flight";
+                    return false;
+                }
+
+                // 2. Directive #5.48 Priority 4: P2 still has real pending choice
+                if (P2PendingChoiceCount > 0 || FlowCoordinator.HasPendingP2Choice(player2))
+                {
+                    blockReason = "p2-pending-choice";
+                    return false;
+                }
+
+                // Directive #5.48 Priority 2: P1 is gathering player choice
+                if (IsPlayer1InChoiceScreen())
+                {
+                    blockReason = "p1-gathering-choice";
+                    return false;
+                }
+
+                // 3. Potion continuation is waiting
+                if (PendingPotionContinuation || (HasTriggeredPotionContinuationThisTurn && !PotionContinuationExecutedPlayThisTurn && (DateTime.UtcNow - PotionContinuationRequestTime).TotalSeconds < 10.0))
+                {
+                    blockReason = "potion-continuation-pending";
+                    return false;
+                }
+
+                // 4. Solver is searching or deploying
+                string staleReason;
+                if (IsSolverGenuinelyActive(player2, GetP2QueuePlayCardCount(player2.NetId), IsPlayer2ActionInFlight(), out staleReason))
+                {
+                    blockReason = "solver-active";
+                    return false;
+                }
+                else if (staleReason != null)
+                {
+                    ClearStaleSolverState(staleReason);
+                }
+
+                // 5. P2 still has usable hand cards and energy
+                // Directive #5.90 T1: unless CombatSolver already satisfied its plan for this turn
+                // (played all planned cards / deliberately stood pat against non-attacking enemies),
+                // in which case "cards-affordable" must not keep blocking the end turn.
+                bool hasAttack;
+                bool hasUsable = P2HasUsableCard(player2, out hasAttack);
+                int energy = player2.PlayerCombatState != null ? player2.PlayerCombatState.Energy : 0;
+                if (hasUsable && energy > 0 && !P2FallbackExhaustedThisTurn && !HasSolverSatisfiedTurnPlan(player2, state))
+                {
+                    if (!LifelineContinuationAttemptedThisTurn)
+                    {
+                        blockReason = "cards-affordable";
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] CheckForceEndTurnGuard exception: " + ex);
+                return true;
+            }
+        }
+
         public static void ForceEndTurnForPlayer2(CombatManager cm, CombatState state, Player player2)
         {
             try
             {
                 if (!IsInCombat()) { DisarmIndependentP2Lifeline("force-end-not-in-combat"); return; }
+                if (AreAllPlayersDead() || IsTerminalCombatFinalized)
+                {
+                    DisarmIndependentP2Lifeline("all-players-dead");
+                    LogTerminalCombatFinalized("all-players-dead");
+                    return;
+                }
+
+                string blockReason;
+                if (!CheckForceEndTurnGuard(cm, state, player2, "ForceEndTurnForPlayer2", out blockReason))
+                {
+                    if (blockReason == "cards-affordable")
+                    {
+                        if (IsPlayer1Dead())
+                        {
+                            bool handled = CheckDeadP1ZeroProgressFallback("force-end-cards-affordable-dead-p1");
+                            if (handled) return;
+                        }
+
+                        LifelineContinuationAttemptedThisTurn = true;
+                        ClearStaleSolverState("lifeline-cards-affordable");
+
+                        if (!PlanEmptyRecalcRequestedThisTurn)
+                        {
+                            GD.Print("[AiTeammate][Coord] p2-force-end-blocked owner=P2 reason=cards-affordable recovery=recalc");
+                            PlanEmptyRecalcRequestedThisTurn = true;
+                            PlanEmptyRecoveryInProgress = true;
+                            PlanEmptyRecoveryStartTime = DateTime.UtcNow;
+                            lock (LifelineGate)
+                            {
+                                IndependentLifelineStartTime = DateTime.UtcNow;
+                                IndependentLifelineFired = false;
+                            }
+                            RequestRecalculation(state, "lifeline-cards-affordable");
+                            return;
+                        }
+
+                        if (!P2FallbackGreedyUsedThisTurn)
+                        {
+                            GD.Print("[AiTeammate][Coord] p2-force-end-blocked owner=P2 reason=cards-affordable recovery=fallback");
+                            PlanEmptyFallbackRequestedThisTurn = true;
+                            GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-requested turn={0}", TurnNumber));
+                            bool enqueued = TryFallbackGreedy(player2);
+                            if (enqueued)
+                            {
+                                lock (LifelineGate)
+                                {
+                                    IndependentLifelineStartTime = DateTime.UtcNow;
+                                    IndependentLifelineFired = false;
+                                }
+                                return;
+                            }
+                        }
+
+                        GD.Print("[AiTeammate][Coord] p2-force-end-blocked owner=P2 reason=cards-affordable recovery=failed");
+                        PlanEmptyRecoveryInProgress = false;
+                    }
+                    else
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-force-end-blocked owner=P2 reason={0}", blockReason));
+                        if (!LifelineContinuationAttemptedThisTurn)
+                        {
+                            LifelineContinuationAttemptedThisTurn = true;
+                            lock (LifelineGate)
+                            {
+                                IndependentLifelineStartTime = DateTime.UtcNow;
+                                IndependentLifelineFired = false;
+                            }
+                            GD.Print("[AiTeammate][Coord] p2-lifeline-recovery: re-arming lifeline turn=" + TurnNumber);
+                        }
+                        return;
+                    }
+                }
                 DisarmIndependentP2Lifeline("force-end-path");
                 P2TurnEndReason = "force-end";
                 LogTurnSummary("ForceEndTurnForPlayer2");
@@ -8668,6 +11286,35 @@ namespace AiTeammate
                 P2TelemetryTurn = turn;
                 P2PlayedCardsThisTurn = 0;
                 P2PlanLengthThisTurn = -1;
+                P2PlannedCardActionsThisTurn = 0;
+                P2EnqueuedCardActionsThisTurn = 0;
+                P2ExecutedCardActionsThisTurn = 0;
+                P2EndTurnGatedCountThisTurn = 0;
+                // Directive #5.87: a new P2 turn must never inherit a half-open start-deploy window.
+                IsStartingDeployment = false;
+                StartDeploymentEnteredAt = DateTime.MinValue;
+                HasEnteredDeployCurrentTurnThisSession = false;
+                PendingPotionContinuation = false;
+                PotionContinuationScheduled = false;
+                PotionContinuationRetryCount = 0;
+                _lastPotionAttemptTime = DateTime.MinValue;
+                _lastPotionDeferredLogTime = DateTime.MinValue;
+                PlanEmptyRecoveryAttemptedThisTurn = false;
+                PlanEmptyRecoveryInProgress = false;
+                PlanEmptyRecoveryStartTime = DateTime.MinValue;
+                PlanEmptyRecalcRequestedThisTurn = false;
+                PlanEmptyFallbackRequestedThisTurn = false;
+                // Directive #5.92 T2: a new P2 turn must never inherit a pending post-deploy continuation.
+                P2PendingPostDeployContinuation = false;
+                P2PendingPostDeployContinuationSince = DateTime.MinValue;
+                P2PendingPostDeployContinuationTurn = -1;
+                ActivePotionId = null;
+                ActivePotionResolvedCard = null;
+                LastPotionContinuationMarker = null;
+                HasTriggeredPotionContinuationThisTurn = false;
+                PotionContinuationExecutedPlayThisTurn = false;
+                PotionContinuationDeployedThisTurn = false;
+                LifelineContinuationAttemptedThisTurn = false;
                 P2SearchStatusThisTurn = "unknown";
                 P2SearchNodesThisTurn = -1;
                 P2PlanHasAttackThisTurn = false;
@@ -8682,6 +11329,10 @@ namespace AiTeammate
                 P2DeployStartActionCountThisTurn = -1;
                 P2DeployHookObservedThisTurn = false;
                 P2EndTurnEnqueuedThisTurn = false;
+                P2EndTurnConfirmedThisTurn = false;
+                P2EndTurnEnqueuedCountThisTurn = 0;
+                P2EndTurnRetryCountThisTurn = 0;
+                P2EndTurnFailedOpenThisTurn = false;
                 P2ZeroActionRetryUsedThisTurn = false;
                 P2SummaryFinalizedThisTurn = false;
                 P2FallbackActionPendingThisTurn = false;
@@ -8775,7 +11426,7 @@ namespace AiTeammate
             hasAttack = false;
             try
             {
-                if (p2 == null || p2.PlayerCombatState == null || p2.PlayerCombatState.Energy <= 0) return false;
+                if (p2 == null || p2.PlayerCombatState == null) return false;
                 var hand = PileType.Hand.GetPile(p2);
                 if (hand == null || hand.Cards == null) return false;
                 foreach (var card in hand.Cards)
@@ -8818,18 +11469,63 @@ namespace AiTeammate
                 int hand = p2 != null ? GetPlayerHandCardCount(p2) : 0;
                 int summaryTurn = P2TelemetryTurn > 0 ? P2TelemetryTurn : TurnNumber;
                 int playedSnapshot = P2PlayedCardsByTurn.ContainsKey(summaryTurn) ? P2PlayedCardsByTurn[summaryTurn] : P2PlayedCardsThisTurn;
-                GD.Print(string.Format("[AiTeammate][Coord] p2-turn-summary turn={0} played={1} end-reason={2} hand={3} energy={4} plan-len={5} search-status={6} search-nodes={7} protection-finalized={8}", summaryTurn, playedSnapshot, reason ?? "normal", hand, energy, P2PlanLengthThisTurn, P2SearchStatusThisTurn, P2SearchNodesThisTurn, P2ZeroActionProtectionFinalizedThisTurn));
+                GD.Print(string.Format("[AiTeammate][Coord] p2-turn-summary turn={0} planned-card-actions={1} enqueued-card-actions={2} executed-card-actions={3} endturn-gated={4} played={5} end-reason={6} hand={7} energy={8} plan-len={9} search-status={10} search-nodes={11} protection-finalized={12}",
+                    summaryTurn, P2PlannedCardActionsThisTurn, P2EnqueuedCardActionsThisTurn, P2ExecutedCardActionsThisTurn, P2EndTurnGatedCountThisTurn, playedSnapshot, reason ?? "normal", hand, energy, P2PlanLengthThisTurn, P2SearchStatusThisTurn, P2SearchNodesThisTurn, P2ZeroActionProtectionFinalizedThisTurn));
                 P2SummaryLoggedTurn = TurnNumber;
                 P2SummaryFinalizedThisTurn = true;
             }
             catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] p2-turn-summary failed: " + ex.Message); }
         }
 
-        public static bool TryFallbackGreedy(Player p2)
+        public static bool TryFallbackGreedy(Player p2, bool latchAlreadySet = false)
         {
             try
             {
-                if (p2 == null || P2FallbackGreedyUsedThisTurn || p2.PlayerCombatState == null || p2.PlayerCombatState.Energy <= 0) return false;
+                // Directive #5.48 Priority 2: Pause fallback while P1 is gathering player choice
+                if (IsPlayer1InChoiceScreen())
+                {
+                    GD.Print("[AiTeammate][Coord] fallback-greedy-deferred: P1 is gathering player choice");
+                    return false;
+                }
+                // Directive #5.90 T1.3: never enqueue greedy cards while CombatSolver is actively
+                // searching or deploying. This was the mechanism that hijacked 10 of 11 boss turns:
+                // a false "solver is stale" diagnosis started the fallback while the solver was still
+                // working, dumping P2's hand and waking a sleeping boss.
+                // The staleness thresholds below are the SAME ones IsSolverGenuinelyActive already
+                // uses, so a hung search/deployment still falls through to greedy (no soft-lock).
+                try
+                {
+                    bool solverBusy = false;
+                    bool searchingNow = IsSolverSearching();
+                    if (searchingNow)
+                    {
+                        bool hbStale = LastSearchHeartbeatTime != DateTime.MinValue && (DateTime.UtcNow - LastSearchHeartbeatTime).TotalSeconds >= 5.0;
+                        bool durStale = SearchAliveStartTime != DateTime.MinValue && (DateTime.UtcNow - SearchAliveStartTime).TotalSeconds >= 8.0;
+                        solverBusy = !(hbStale || durStale);
+                    }
+                    bool deployingNow = false;
+                    if (!solverBusy)
+                    {
+                        deployingNow = IsSolverDeploying() || IsDeploying;
+                        if (deployingNow)
+                        {
+                            bool depStale = DeployStartTime != DateTime.MinValue && (DateTime.UtcNow - DeployStartTime).TotalSeconds >= 2.0;
+                            solverBusy = !depStale;
+                        }
+                    }
+                    if (solverBusy)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] greedy-aborted reason=solver-active turn={0} searching={1} deploying={2}", TurnNumber, searchingNow, deployingNow));
+                        return false;
+                    }
+                }
+                catch { }
+                // Directive #5.88 T3: energy==0 must NOT disable the fallback. 0-energy / Star-cost
+                // cards (e.g. CARD.FALLING_STAR: 0 energy, 2 stars) are still playable with no energy,
+                // and bailing out here left P2 unable to act while the gate kept deferring.
+                // latchAlreadySet: the end-turn gate latches P2FallbackGreedyUsedThisTurn BEFORE calling
+                // it (so its branch can never re-enter); that latched attempt must still run here once.
+                if (p2 == null || (!latchAlreadySet && P2FallbackGreedyUsedThisTurn) || p2.PlayerCombatState == null) return false;
                 var hand = PileType.Hand.GetPile(p2);
                 if (hand == null || hand.Cards == null) return false;
 
@@ -8843,16 +11539,48 @@ namespace AiTeammate
                     return false;
                 }
 
+                // Directive #5.88 T3: latch greedy fallback here as well, so any caller path (not just
+                // the end-turn gate) can only run one greedy batch per turn.
+                P2FallbackGreedyUsedThisTurn = true;
+
                 HashSet<CardModel> triedCards = new HashSet<CardModel>();
                 int cardsPlayedInLoop = 0;
-                int remainingEnergy = p2.PlayerCombatState.Energy;
+                int remainingEnergy = Math.Max(0, p2.PlayerCombatState.Energy);
+
+                // Directive #5.89 T2: bounded "why are we entering greedy" telemetry. Emitted once per
+                // (turn, trigger) pair, immediately before the first greedy play of the turn, so every
+                // fallback-greedy-requested line in that turn has a preceding greedy-trigger on the same turn.
+                try
+                {
+                    bool solverActiveNow = false;
+                    try { solverActiveNow = IsSolverSearching() || IsDeploying; } catch { }
+                    bool recalcNow = RecalcRequestedThisTurn || PlanEmptyRecalcRequestedThisTurn;
+                    string trigger = null;
+                    if (P2GreedyTriggerHint == "draw-stall-fast-finish") trigger = "draw-stall-fast-finish";
+                    else if (P2GreedyTriggerHint == "choice-failure") trigger = "choice-failure";
+                    else if (P2GreedyTriggerHint == "plan-empty") trigger = "plan-empty";
+                    else if (P2FallbackExhaustedThisTurn) trigger = "recovery-exhausted";
+                    else if (!solverActiveNow) trigger = "solver-inactive";
+                    else trigger = "unknown";
+                    string logKey = TurnNumber + "|" + trigger;
+                    if (P2GreedyTriggerLoggedKey != logKey)
+                    {
+                        P2GreedyTriggerLoggedKey = logKey;
+                        GD.Print(string.Format("[AiTeammate][Coord] greedy-trigger turn={0} trigger={1} solverActive={2} recalc={3} recoveryExhausted={4} lastSolverEvent={5}",
+                            TurnNumber, trigger, solverActiveNow, recalcNow, P2FallbackExhaustedThisTurn, P2LastSolverEventTag ?? "none"));
+                    }
+                }
+                catch { }
 
                 IsEnqueuingFallbackBatch = true;
                 try
                 {
                     for (int iter = 0; iter < 6; iter++)
                     {
-                        if (remainingEnergy <= 0) break;
+                        // Directive #5.88 T3: no energy<=0 short-circuit. IsAffordable/GetCardEnergyCost
+                        // below already filter out anything unaffordable, and a 0-cost playable card
+                        // must still be played when energy is exhausted (Star-cost cards, Blood for
+                        // Blood style 0-cost plays). If nothing is affordable the list stays empty.
                         if (p2.PlayerCombatState == null) break;
                         if (hand.Cards == null || hand.Cards.Count == 0) break;
 
@@ -8912,9 +11640,17 @@ namespace AiTeammate
 
                         using (EnterP2ActionSenderScope("TryFallbackGreedy"))
                         {
-                            enq.Invoke(aqs, new object[] { action });
+                            try
+                            {
+                                enq.Invoke(aqs, new object[] { action });
+                                P2EnqueuedCardActionsThisTurn++;
+                                cardsPlayedInLoop++;
+                            }
+                            catch (Exception exEnq)
+                            {
+                                GD.Print(string.Format("[AiTeammate][Coord] p2-action-enqueue-failed owner=P2 card={0} reason={1}", chosen != null ? chosen.Id.ToString() : "unknown", exEnq.Message));
+                            }
                         }
-                        cardsPlayedInLoop++;
                     }
                 }
                 finally
@@ -8922,19 +11658,33 @@ namespace AiTeammate
                     IsEnqueuingFallbackBatch = false;
                 }
 
-                // Crucially: always ensure P2 ends its turn at the end of fallback!
-                var cm = CombatManager.Instance;
-                bool queued = EnqueueP2EndTurn(p2);
-                if (queued)
+                if (cardsPlayedInLoop == 0)
                 {
-                    P2FallbackEndTurnQueuedThisTurn = true;
-                }
-                else if (cardsPlayedInLoop == 0 && !IsPlayer2ActionInFlight())
-                {
-                    if (cm != null && !cm.IsPlayerReadyToEndTurn(p2))
+                    P2FallbackExhaustedThisTurn = true;
+                    LogFallbackExhaustedSet("greedy-loop-no-cards");
+                    PlanEmptyRecoveryInProgress = false;
+                    var cm = CombatManager.Instance;
+                    bool queued = EnqueueP2EndTurn(p2);
+                    if (queued)
                     {
-                        ForceEndTurnForPlayer2(cm, state, p2);
+                        P2FallbackEndTurnQueuedThisTurn = true;
+                        GD.Print("[AiTeammate][Coord] fallback-greedy-end-turn-enqueued turn=" + TurnNumber + " owner=P2");
                     }
+                    else if (!IsPlayer2ActionInFlight())
+                    {
+                        if (cm != null && !cm.IsPlayerReadyToEndTurn(p2))
+                        {
+                            if (CheckP2EndTurnGate(p2, "fallback-force-end-turn"))
+                            {
+                                ForceEndTurnForPlayer2(cm, state, p2);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    P2FallbackActionPendingThisTurn = true;
+                    GD.Print(string.Format("[AiTeammate][Coord] fallback-greedy-batch-enqueued count={0} awaiting-execution turn={1}", cardsPlayedInLoop, TurnNumber));
                 }
 
                 HasCompletedDeploymentThisTurn = true;
@@ -8957,8 +11707,9 @@ namespace AiTeammate
         {
             if (card == null || owner == null) return null;
             TargetType targetType = card.TargetType;
-            if (targetType == TargetType.None || targetType == TargetType.TargetedNoCreature || targetType == TargetType.AllEnemies || targetType == TargetType.AllAllies || targetType == TargetType.RandomEnemy || targetType == TargetType.Osty) return null;
-            if (targetType == TargetType.Self) return owner.Creature;
+            // Directive #5.49: In native STS2 IsValidTarget (CardModel.cs RVA 0x7dd80), TargetType.Self (1) requires target == null!
+            // Passing a non-null creature causes native IsValidTarget to return false and call GameAction.Cancel().
+            if (targetType == TargetType.None || targetType == TargetType.Self || targetType == TargetType.TargetedNoCreature || targetType == TargetType.AllEnemies || targetType == TargetType.AllAllies || targetType == TargetType.RandomEnemy || targetType == TargetType.Osty) return null;
             if (targetType == TargetType.AnyAlly || targetType == TargetType.AnyPlayer)
             {
                 if (state != null && state.Players != null)
@@ -8974,92 +11725,458 @@ namespace AiTeammate
             return null;
         }
 
+        public static int GetP2QueuePlayCardCount(ulong p2NetId)
+        {
+            try
+            {
+                var aqs = RunManager.Instance != null ? RunManager.Instance.ActionQueueSet : null;
+                if (aqs == null) return 0;
+                var dictField = AccessTools.Field(typeof(ActionQueueSet), "_actionQueues") ?? AccessTools.Field(typeof(ActionQueueSet), "actionQueues");
+                if (dictField != null)
+                {
+                    object dictObj = dictField.GetValue(aqs);
+                    System.Collections.IDictionary dict = dictObj as System.Collections.IDictionary;
+                    if (dict != null)
+                    {
+                        foreach (System.Collections.DictionaryEntry entry in dict)
+                        {
+                            ulong keyId = 0;
+                            if (entry.Key is ulong)
+                            {
+                                keyId = (ulong)entry.Key;
+                            }
+                            else if (entry.Key != null)
+                            {
+                                ulong parsed;
+                                if (ulong.TryParse(entry.Key.ToString(), out parsed)) keyId = parsed;
+                            }
+
+                            if (keyId == p2NetId)
+                            {
+                                object q = entry.Value;
+                                if (q == null) return 0;
+                                PropertyInfo countProp = q.GetType().GetProperty("Count");
+                                int count = countProp != null ? (int)countProp.GetValue(q, null) : 0;
+                                return count;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        // Directive #5.48 Priority 1: Exclude the EndPlayerTurnAction itself from being self-intercepted as action-inflight
+        public static bool CheckP2EndTurnGate(Player p2, string caller, MegaCrit.Sts2.Core.GameActions.GameAction currentAction = null)
+        {
+            // Directive #5.88 T2.3: hard backstop. A gate that re-enters itself through an enqueue is
+            // unrecoverable once it recurses synchronously (StackOverflowException kills the process,
+            // no catch can save it). Fail open instead of crashing.
+            if (EndTurnGateDepth >= 4)
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate-recursion-guard depth={0} caller={1} turn={2} decision=allow", EndTurnGateDepth, caller ?? "unknown", TurnNumber));
+                return true;
+            }
+            try
+            {
+                EndTurnGateDepth++;
+                if (AreAllPlayersDead() || IsTerminalCombatFinalized)
+                {
+                    LogTerminalCombatFinalized("all-players-dead");
+                    return false;
+                }
+                if (p2 == null) return true;
+                ulong p2NetId = p2.NetId;
+
+                // Never gate P1
+                ulong p1NetId = GetPlayer1NetId();
+                if (p1NetId != 0 && p1NetId == p2NetId) return true;
+
+                var cm = CombatManager.Instance;
+                CombatState cs = cm != null ? cm.DebugOnlyGetState() : null;
+                if (cs == null) return true; // Outside combat, don't gate
+
+                // Directive #5.48 Priority 1 & #5.57: Exclude the EndPlayerTurnAction itself from being self-intercepted as action-inflight
+                bool isEndTurnExecuting = (currentAction is MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction) ||
+                                          (caller == "EndPlayerTurnAction.ExecuteAction");
+
+                int queueCount = GetP2QueuePlayCardCount(p2NetId);
+                bool inflight = isEndTurnExecuting ? false : IsPlayer2ActionInFlight(true, currentAction);
+                string staleReason = null;
+                bool genuinelyActive = false;
+                if (!isEndTurnExecuting)
+                {
+                    genuinelyActive = IsSolverGenuinelyActive(p2, queueCount, inflight, out staleReason);
+                }
+                if (!genuinelyActive && staleReason != null)
+                {
+                    ClearStaleSolverState(staleReason);
+                }
+
+                int energy = p2.PlayerCombatState != null ? p2.PlayerCombatState.Energy : 0;
+                int hand = (p2.PlayerCombatState != null && p2.PlayerCombatState.Hand != null && p2.PlayerCombatState.Hand.Cards != null) ? p2.PlayerCombatState.Hand.Cards.Count : 0;
+
+                // Check remaining planned card actions
+                // Directive #5.88 T2: only trust the planned count while the solver is genuinely
+                // deploying this turn. Once deployment finished (or recovery is exhausted) a stale
+                // planned count must never keep gating EndTurn with reason=plan-remaining-cards.
+                int remainingPlanned = 0;
+                if (genuinelyActive && !HasCompletedDeploymentThisTurn && !P2FallbackExhaustedThisTurn && P2PlannedCardActionsThisTurn > 0)
+                {
+                    remainingPlanned = Math.Max(0, P2PlannedCardActionsThisTurn - P2EnqueuedCardActionsThisTurn);
+                }
+
+                bool hasAffordablePlayable = false;
+                CardModel firstAffordableCard = null;
+                if (p2.PlayerCombatState != null && p2.PlayerCombatState.Hand != null && p2.PlayerCombatState.Hand.Cards != null)
+                {
+                    foreach (var c in p2.PlayerCombatState.Hand.Cards)
+                    {
+                        if (c != null && CanCardBePlayedByPlayer(c, p2))
+                        {
+                            hasAffordablePlayable = true;
+                            firstAffordableCard = c;
+                            break;
+                        }
+                    }
+                }
+
+                // Directive #5.90 T1: the solver's own EndTurn arrives before CompleteDeployment, so
+                // deploymentComplete alone is not enough evidence that P2's turn work is done.
+                // Computed unconditionally: the defer chain below already short-circuits on
+                // queue-has-cards / action-inflight / solver-active / plan-remaining-cards first.
+                bool solverPlanSatisfied = HasSolverSatisfiedTurnPlan(p2, cs);
+
+                bool deploymentComplete = HasCompletedDeploymentThisTurn && remainingPlanned == 0 && queueCount == 0 && !inflight;
+                bool recoveryExhausted = P2FallbackExhaustedThisTurn ||
+                                         deploymentComplete ||
+                                         (PlanEmptyRecoveryAttemptedThisTurn && P2FallbackGreedyUsedThisTurn) ||
+                                         (!PlanEmptyRecoveryInProgress && (PlanEmptyFallbackRequestedThisTurn || P2FallbackGreedyUsedThisTurn || PlanEmptyRecoveryAttemptedThisTurn));
+
+                string deferReason = null;
+                if (queueCount > 0)
+                {
+                    deferReason = "queue-has-cards";
+                }
+                else if (inflight)
+                {
+                    deferReason = "action-inflight";
+                }
+                else if (genuinelyActive)
+                {
+                    deferReason = "solver-active";
+                }
+                else if (remainingPlanned > 0)
+                {
+                    deferReason = "plan-remaining-cards";
+                }
+                else if (P2PotionOpInFlightCount > 0)
+                {
+                    deferReason = "potion-op-in-flight";
+                }
+                else if (PendingPotionContinuation)
+                {
+                    deferReason = "potion-continuation-pending";
+                }
+                else if (solverPlanSatisfied)
+                {
+                    // Directive #5.90 T1: solver satisfied its plan for this turn (all planned cards
+                    // played, or deliberate stand-pat against non-attacking enemies). Allow the
+                    // EndTurn it enqueued instead of deferring + running plan-empty recovery.
+                    deferReason = null;
+                }
+                else if (hasAffordablePlayable)
+                {
+                    // Directive #5.49 & #5.70: Legal energy retention / recovery exhausted fail-open.
+                    // If recovery/fallback has already been attempted or exhausted, or deployment completed, or if caller is an explicit end-turn,
+                    // do NOT indefinitely block ending the turn with cards-affordable when no further cards can/will be played.
+                    bool isExplicitEndTurnCaller = caller == "EnqueueP2EndTurn" || 
+                                                  caller == "EnqueueP2EndTurnAfterFallback" || 
+                                                  caller == "fallback-force-end-turn" || 
+                                                  caller == "EndPlayerTurnAction.ExecuteAction" ||
+                                                  caller == "CheckPlanEmptyRecoveryWatchdog" ||
+                                                  caller == "ActionQueueSynchronizer.RequestEnqueue";
+
+                    if (recoveryExhausted || (isExplicitEndTurnCaller && (P2FallbackExhaustedThisTurn || (!PlanEmptyRecoveryInProgress && PlanEmptyRecoveryAttemptedThisTurn))))
+                    {
+                        deferReason = null;
+                    }
+                    else
+                    {
+                        deferReason = "cards-affordable";
+                    }
+                }
+
+                // Directive #5.92 T2.1: a 0-card plan makes CombatSolver enqueue its own EndTurn from
+                // INSIDE DeployCurrentTurn (caller=ActionQueueSynchronizer.RequestEnqueue). IsDeploying is
+                // still true at that instant, so the #5.91 T3.3 idle-only continuation guard below is
+                // structurally unreachable - the turn was allowed with reason=recovery-exhausted without a
+                // single greedy card (battle2 turn=4, 2026-11-06 23:25 log). This runs BEFORE the
+                // deferReason chain so a cards-affordable verdict cannot swallow the request first.
+                int depContAction = TryHandleRecalcEmptyDeployingContinuation(p2, caller, queueCount, inflight, hand, energy, solverPlanSatisfied, genuinelyActive);
+                if (depContAction == 2) return true;
+                if (depContAction == 1) return false;
+
+                if (deferReason != null)
+                {
+                    P2EndTurnGatedCountThisTurn++;
+                    string cardId = firstAffordableCard != null && firstAffordableCard.Id != null ? firstAffordableCard.Id.ToString() : "none";
+                    bool isPlayable = firstAffordableCard != null && CheckIsPlayable(firstAffordableCard);
+                    bool isAfford = firstAffordableCard != null && IsAffordable(firstAffordableCard, p2);
+                    bool recalc = RecalcRequestedThisTurn || PlanEmptyRecalcRequestedThisTurn;
+                    string fallbackState = string.Format("attempted={0}:greedyUsed={1}:inProgress={2}:exhausted={3}",
+                        PlanEmptyRecoveryAttemptedThisTurn, P2FallbackGreedyUsedThisTurn, PlanEmptyRecoveryInProgress, P2FallbackExhaustedThisTurn);
+
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=defer reason={0} caller={1} hand={2} energy={3} card={4} isPlayable={5} isAffordable={6} solverActive={7} recalc={8} recoveryExhausted={9} fallbackState={10} queue={11} inflight={12} remaining-card-actions={13} turn={14}",
+                        deferReason, caller ?? "unknown", hand, energy, cardId, isPlayable, isAfford, genuinelyActive, recalc, recoveryExhausted, fallbackState, queueCount, inflight, remainingPlanned, TurnNumber));
+
+                    // Trigger recovery if cards are affordable and solver is not genuinely active
+                    if (!genuinelyActive && queueCount == 0 && !inflight && hasAffordablePlayable)
+                    {
+                        if (P2SuspectTruncatedAfterOneCardThisTurn && P2PlayedCardsThisTurn >= 1 && !P2FallbackExecutedThisTurn && !IsSolverDeploying() && !IsDeploying)
+                        {
+                            TriggerP2Fallback(p2, cs, "truncated-one-card-continuation");
+                        }
+                        else if (!PlanEmptyRecoveryAttemptedThisTurn)
+                        {
+                            ExecutePlanEmptyRecovery(p2, cs, "endturn-gate-cards-affordable");
+                        }
+                        else if (!P2FallbackGreedyUsedThisTurn)
+                        {
+                            PlanEmptyFallbackRequestedThisTurn = true;
+                            // Directive #5.88 T2.2: latch the greedy fallback BEFORE calling it so this
+                            // branch can never run twice in one turn, and never call EnqueueP2EndTurn
+                            // from inside the gate (that was an unbounded synchronous recursion:
+                            // gate -> EnqueueP2EndTurn -> gate -> ... -> StackOverflowException).
+                            P2FallbackGreedyUsedThisTurn = true;
+                            GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-requested turn={0}", TurnNumber));
+                            P2GreedyTriggerHint = "plan-empty";
+                            bool enqueued = TryFallbackGreedy(p2, true);
+                            if (!enqueued)
+                            {
+                                PlanEmptyRecoveryInProgress = false;
+                                P2FallbackExhaustedThisTurn = true;
+                                LogFallbackExhaustedSet("gate-fallback-failed");
+                                GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-recovery-failed turn={0} (allowing end-turn)", TurnNumber));
+                                GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=allow reason=fallback-exhausted-allow-endturn caller={0} hand={1} energy={2} queue={3} inflight={4} turn={5}",
+                                    caller ?? "unknown", hand, energy, queueCount, inflight, TurnNumber));
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
+                }
+
+                // Directive #5.91 T3.3: the recalc already ran this turn, the solver is idle, the plan is
+                // NOT satisfied and the recalc produced no NEW card. Before allowing EndTurn with
+                // reason=recovery-exhausted, make one real greedy attempt. The #5.90 run allowed EndTurn
+                // here while P2FallbackExecutedThisTurn had been latched by a watchdog that
+                // TryFallbackGreedy then refused -> zero cards played on a 0-card turn (RC-3).
+                if (PlanEmptyRecoveryAttemptedThisTurn && !P2FallbackExecutedThisTurn && !P2FallbackExhaustedThisTurn
+                    && !solverPlanSatisfied && !genuinelyActive && queueCount == 0 && !inflight
+                    && !IsSolverSearching() && !IsSolverDeploying() && !IsDeploying
+                    && P2PlayedCardsThisTurn <= P2PlayedCardsAtRecalcStart)
+                {
+                    bool fallbackPlayed = TriggerP2Fallback(p2, cs, "recalc-empty-continuation");
+                    if (fallbackPlayed)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=block reason=fallback-playing caller={0} hand={1} energy={2} played={3} played-at-recalc={4} queue={5} inflight={6} turn={7}",
+                            caller ?? "unknown", hand, energy, P2PlayedCardsThisTurn, P2PlayedCardsAtRecalcStart, queueCount, inflight, TurnNumber));
+                        return false;
+                    }
+                }
+
+                if (solverPlanSatisfied)
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=allow reason=solver-plan-satisfied caller={0} hand={1} energy={2} queue={3} inflight={4} plan-len={5} planned={6} played={7} enqueued={8} turn={9}",
+                        caller ?? "unknown", hand, energy, queueCount, inflight, P2PlanLengthThisTurn, P2PlannedCardActionsThisTurn, P2PlayedCardsThisTurn, P2EnqueuedCardActionsThisTurn, TurnNumber));
+                }
+                else if (staleReason != null)
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=allow reason=stale-solver-cleared caller={0} hand={1} energy={2} queue={3} inflight={4} remaining-card-actions={5} turn={6}",
+                        caller ?? "unknown", hand, energy, queueCount, inflight, remainingPlanned, TurnNumber));
+                }
+                else if (hasAffordablePlayable || recoveryExhausted)
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=allow reason=recovery-exhausted caller={0} hand={1} energy={2} queue={3} inflight={4} remaining-card-actions={5} turn={6}",
+                        caller ?? "unknown", hand, energy, queueCount, inflight, remainingPlanned, TurnNumber));
+                }
+                else
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-gate decision=allow reason=all-clear caller={0} hand={1} energy={2} queue={3} inflight={4} remaining-card-actions={5} turn={6}",
+                        caller ?? "unknown", hand, energy, queueCount, inflight, remainingPlanned, TurnNumber));
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] CheckP2EndTurnGate exception: " + ex);
+                return true; // fail-open
+            }
+            finally
+            {
+                if (EndTurnGateDepth > 0) EndTurnGateDepth--;
+            }
+        }
+
+        // Directive #5.55 T1: Request key generation
+        public static string GetP2EndTurnKey(int round, ulong netId)
+        {
+            return string.Format("combat={0}:turn={1}:owner={2}", CombatGeneration, round, netId);
+        }
+
+        // Directive #5.55 T1 & T3: Unified Enqueue Internal with idempotency and controlled retry
+        public static bool EnqueueP2EndTurnInternal(Player p2, string caller, bool isRetry = false, string retryReason = null)
+        {
+            try
+            {
+                if (p2 == null) return false;
+                if (AreAllPlayersDead() || IsTerminalCombatFinalized)
+                {
+                    LogTerminalCombatFinalized("all-players-dead");
+                    return false;
+                }
+                var cm = CombatManager.Instance;
+                if (cm != null && cm.IsPlayerReadyToEndTurn(p2)) return true;
+
+                CombatState cs = cm != null ? cm.DebugOnlyGetState() : null;
+                int currentRound = (cs != null && cs.RoundNumber > 0) ? cs.RoundNumber : (TurnNumber > 0 ? TurnNumber : 1);
+                string key = GetP2EndTurnKey(currentRound, p2.NetId);
+
+                // T1: Idempotency check for regular (non-retry) requests
+                if (!isRetry)
+                {
+                    if (P2EndTurnEnqueuedKeys.Contains(key) || P2EndTurnEnqueuedCountThisTurn > 0)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-end-turn-deduped turn={0} reason=already-enqueued", currentRound));
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (P2EndTurnFailedOpenThisTurn)
+                    {
+                        return false;
+                    }
+                }
+
+                if (!CheckP2EndTurnGate(p2, caller ?? "EnqueueP2EndTurn")) return false;
+
+                if (cm == null) cm = CombatManager.Instance;
+                if (cm != null && cm.IsPlayerReadyToEndTurn(p2)) return true;
+
+                var aqs = RunManager.Instance != null ? RunManager.Instance.ActionQueueSet : null;
+                if (aqs == null) return false;
+
+                Type pt = typeof(MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction);
+                foreach (var ctor in pt.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    var ps = ctor.GetParameters(); var args = new object[ps.Length]; bool ownerBound = false; bool ok = true;
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        var t = ps[i].ParameterType;
+                        if (t == typeof(Player)) { args[i] = p2; ownerBound = true; }
+                        else if (t == typeof(ulong)) { args[i] = p2.NetId; ownerBound = true; }
+                        else if (t == typeof(int)) args[i] = currentRound;
+                        else if (t == typeof(bool)) args[i] = false;
+                        else if (!t.IsValueType) args[i] = null;
+                        else { ok = false; break; }
+                    }
+                    if (!ok || !ownerBound) continue;
+                    object action = ctor.Invoke(args);
+                    var enq = aqs.GetType().GetMethod("EnqueueWithoutSynchronizing", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (enq == null) continue;
+                    var ep = enq.GetParameters(); var ea = new object[ep.Length];
+                    for (int i = 0; i < ep.Length; i++) ea[i] = ep[i].ParameterType.IsInstanceOfType(action) ? action : (ep[i].ParameterType == typeof(ulong) ? (object)p2.NetId : null);
+                    using (EnterP2ActionSenderScope(caller ?? "EnqueueP2EndTurn"))
+                    {
+                        enq.Invoke(aqs, ea);
+                    }
+                    P2EndTurnEnqueuedKeys.Add(key);
+                    P2EndTurnEnqueuedCountThisTurn++;
+                    P2EndTurnEnqueuedThisTurn = true;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-end-turn-enqueued turn={0} owner=P2", currentRound));
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] EnqueueP2EndTurnInternal failed: " + ex.Message);
+            }
+            return false;
+        }
+
+        // Directive #5.55 T2 & #5.57: Controlled single retry on canceled ONLY
+        public static bool TryRetryP2EndTurn(Player p2, string reason)
+        {
+            try
+            {
+                if (p2 == null) return false;
+                if (AreAllPlayersDead() || IsTerminalCombatFinalized) return false;
+                var cm = CombatManager.Instance;
+                if (cm != null && cm.IsPlayerReadyToEndTurn(p2)) return true;
+                CombatState cs = cm != null ? cm.DebugOnlyGetState() : null;
+                int currentRound = (cs != null && cs.RoundNumber > 0) ? cs.RoundNumber : (TurnNumber > 0 ? TurnNumber : 1);
+
+                // Directive #5.57: Only confirmed action cancellation is allowed to retry. phase-unchanged alone is strictly forbidden!
+                if (!string.Equals(reason, "canceled", StringComparison.OrdinalIgnoreCase))
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] endturn-retry-blocked-reason reason={0}",
+                        string.Equals(reason, "phase-unchanged", StringComparison.OrdinalIgnoreCase) ? "phase-unchanged-not-allowed" : (reason ?? "unknown")));
+                    return false;
+                }
+
+                if (P2EndTurnRetryCountThisTurn >= 1 || P2EndTurnFailedOpenThisTurn)
+                {
+                    GD.Print("[AiTeammate][Coord] endturn-retry-blocked-reason reason=retry-budget-exhausted");
+                    if (!P2EndTurnFailedOpenThisTurn)
+                    {
+                        P2EndTurnFailedOpenThisTurn = true;
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-end-turn-fail-open turn={0}", currentRound));
+                    }
+                    return false;
+                }
+
+                GD.Print(string.Format("[AiTeammate][Coord] p2-end-turn-retry turn={0} reason={1}", currentRound, reason));
+                P2EndTurnRetryCountThisTurn++;
+                return EnqueueP2EndTurnInternal(p2, "EndTurnRetry", isRetry: true, retryReason: reason);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] TryRetryP2EndTurn exception: " + ex);
+                return false;
+            }
+        }
+
         public static bool EnqueueP2EndTurnAfterFallback(Player p2)
         {
             try
             {
                 if (p2 == null || P2FallbackEndTurnQueuedThisTurn || !P2FallbackActionExecutedThisTurn) return false;
-                var aqs = RunManager.Instance != null ? RunManager.Instance.ActionQueueSet : null;
-                if (aqs == null) return false;
-                var cm = CombatManager.Instance;
-                CombatState cs = cm != null ? cm.DebugOnlyGetState() : null;
-                int currentRound = (cs != null && cs.RoundNumber > 0) ? cs.RoundNumber : (TurnNumber > 0 ? TurnNumber : 1);
-                Type pt = typeof(MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction);
-                foreach (var ctor in pt.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                P2FallbackEndTurnQueuedThisTurn = true;
+                bool success = EnqueueP2EndTurnInternal(p2, "EnqueueP2EndTurnAfterFallback", isRetry: false, retryReason: null);
+                if (success)
                 {
-                    var ps = ctor.GetParameters(); var args = new object[ps.Length]; bool ownerBound = false; bool ok = true;
-                    for (int i = 0; i < ps.Length; i++)
-                    {
-                        var t = ps[i].ParameterType;
-                        if (t == typeof(Player)) { args[i] = p2; ownerBound = true; }
-                        else if (t == typeof(ulong)) { args[i] = p2.NetId; ownerBound = true; }
-                        else if (t == typeof(int)) args[i] = currentRound;
-                        else if (t == typeof(bool)) args[i] = false;
-                        else if (!t.IsValueType) args[i] = null;
-                        else { ok = false; break; }
-                    }
-                    if (!ok || !ownerBound) continue;
-                    object action = ctor.Invoke(args);
-                    var enq = aqs.GetType().GetMethod("EnqueueWithoutSynchronizing", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (enq == null) continue;
-                    var ep = enq.GetParameters(); var ea = new object[ep.Length];
-                    for (int i = 0; i < ep.Length; i++) ea[i] = ep[i].ParameterType.IsInstanceOfType(action) ? action : (ep[i].ParameterType == typeof(ulong) ? (object)p2.NetId : null);
-                    using (EnterP2ActionSenderScope("EnqueueP2EndTurnAfterFallback"))
-                    {
-                        enq.Invoke(aqs, ea);
-                    }
-                    P2FallbackEndTurnQueuedThisTurn = true;
-                    GD.Print("[AiTeammate][Coord] fallback-greedy-end-turn-enqueued turn=" + currentRound + " owner=P2");
-                    return true;
+                    var cm = CombatManager.Instance;
+                    CombatState cs = cm != null ? cm.DebugOnlyGetState() : null;
+                    int currentRound = (cs != null && cs.RoundNumber > 0) ? cs.RoundNumber : (TurnNumber > 0 ? TurnNumber : 1);
+                    GD.Print(string.Format("[AiTeammate][Coord] fallback-greedy-end-turn-enqueued turn={0} owner=P2", currentRound));
                 }
+                return success;
             }
-            catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] fallback-greedy-end-turn enqueue failed: " + ex.Message); }
-            return false;
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] fallback-greedy-end-turn enqueue failed: " + ex.Message);
+                return false;
+            }
         }
 
-        // Directive #5.30: Direct P2 End Turn Enqueue
+        // Directive #5.30 & #5.55: Direct P2 End Turn Enqueue
         public static bool EnqueueP2EndTurn(Player p2)
         {
-            try
-            {
-                if (p2 == null) return false;
-                var cm = CombatManager.Instance;
-                if (cm != null && cm.IsPlayerReadyToEndTurn(p2)) return true;
-                var aqs = RunManager.Instance != null ? RunManager.Instance.ActionQueueSet : null;
-                if (aqs == null) return false;
-                CombatState cs = cm != null ? cm.DebugOnlyGetState() : null;
-                int currentRound = (cs != null && cs.RoundNumber > 0) ? cs.RoundNumber : (TurnNumber > 0 ? TurnNumber : 1);
-                Type pt = typeof(MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction);
-                foreach (var ctor in pt.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-                {
-                    var ps = ctor.GetParameters(); var args = new object[ps.Length]; bool ownerBound = false; bool ok = true;
-                    for (int i = 0; i < ps.Length; i++)
-                    {
-                        var t = ps[i].ParameterType;
-                        if (t == typeof(Player)) { args[i] = p2; ownerBound = true; }
-                        else if (t == typeof(ulong)) { args[i] = p2.NetId; ownerBound = true; }
-                        else if (t == typeof(int)) args[i] = currentRound;
-                        else if (t == typeof(bool)) args[i] = false;
-                        else if (!t.IsValueType) args[i] = null;
-                        else { ok = false; break; }
-                    }
-                    if (!ok || !ownerBound) continue;
-                    object action = ctor.Invoke(args);
-                    var enq = aqs.GetType().GetMethod("EnqueueWithoutSynchronizing", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (enq == null) continue;
-                    var ep = enq.GetParameters(); var ea = new object[ep.Length];
-                    for (int i = 0; i < ep.Length; i++) ea[i] = ep[i].ParameterType.IsInstanceOfType(action) ? action : (ep[i].ParameterType == typeof(ulong) ? (object)p2.NetId : null);
-                    using (EnterP2ActionSenderScope("EnqueueP2EndTurn"))
-                    {
-                        enq.Invoke(aqs, ea);
-                    }
-                    P2EndTurnEnqueuedThisTurn = true;
-                    GD.Print("[AiTeammate][Coord] p2-end-turn-enqueued turn=" + currentRound + " owner=P2");
-                    return true;
-                }
-            }
-            catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] EnqueueP2EndTurn failed: " + ex.Message); }
-            return false;
+            return EnqueueP2EndTurnInternal(p2, "EnqueueP2EndTurn", isRetry: false, retryReason: null);
         }
 
         public static bool HasPlayableAttackOrSkill(Player p2, out bool hasAttack)
@@ -9067,7 +12184,7 @@ namespace AiTeammate
             hasAttack = false;
             try
             {
-                if (p2 == null || p2.PlayerCombatState == null || p2.PlayerCombatState.Energy <= 0) return false;
+                if (p2 == null || p2.PlayerCombatState == null) return false;
                 var hand = PileType.Hand.GetPile(p2);
                 if (hand == null || hand.Cards == null) return false;
                 foreach (var card in hand.Cards)
@@ -9085,10 +12202,260 @@ namespace AiTeammate
             return false;
         }
 
+        // Directive #5.87: open/close the window in which SolverController.StartDeployment is only
+        // cleaning up the previous deployment session. CompleteDeploymentPostfix must stay silent inside it.
+        public static void BeginStartDeploymentCleanupWindow(string source)
+        {
+            IsStartingDeployment = true;
+            StartDeploymentEnteredAt = DateTime.UtcNow;
+            HasEnteredDeployCurrentTurnThisSession = false;
+            GD.Print("[AiTeammate][Coord] start-deployment-window-open source=" + (source ?? "unknown"));
+        }
+
+        public static void EndStartDeploymentCleanupWindow(string source)
+        {
+            if (!IsStartingDeployment) return;
+            IsStartingDeployment = false;
+            GD.Print("[AiTeammate][Coord] start-deployment-window-close source=" + (source ?? "unknown"));
+        }
+
+        public static bool IsStartDeploymentCleanupWindowActive()
+        {
+            if (!IsStartingDeployment) return false;
+            // Self-heal: an aborted StartDeployment never reaches DeployCurrentTurn. Without this the
+            // flag would swallow every later CompleteDeployment for the rest of the run.
+            if (StartDeploymentEnteredAt != DateTime.MinValue && (DateTime.UtcNow - StartDeploymentEnteredAt).TotalSeconds > 5.0)
+            {
+                IsStartingDeployment = false;
+                StartDeploymentEnteredAt = DateTime.MinValue;
+                GD.Print("[AiTeammate][Coord] start-deployment-window-expired");
+                return false;
+            }
+            return true;
+        }
+
+        // Directive #5.91 T2: "dormant" must mean the monster is objectively asleep, NOT merely that it
+        // is using a non-attack move. WATERFALL_GIANT's SIPHON_MOVE also reports
+        // intents=[attack×0, non-attack×1], and treating that as "sleeping" let P2 end a turn with 3
+        // energy and a hand full of attacks (RC-2).
+        static bool ContainsDormantWord(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            return s.IndexOf("SLEEP", StringComparison.OrdinalIgnoreCase) >= 0
+                || s.IndexOf("ASLEEP", StringComparison.OrdinalIgnoreCase) >= 0
+                || s.IndexOf("DORMANT", StringComparison.OrdinalIgnoreCase) >= 0
+                || s.IndexOf("SNOOZE", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static bool IsCreatureTrulyDormant(Creature c)
+        {
+            if (c == null || !c.IsAlive) return false;
+            try
+            {
+                var monster = c.Monster;
+                if (monster != null)
+                {
+                    var nextMove = monster.NextMove;
+                    if (nextMove != null)
+                    {
+                        if (ContainsDormantWord(nextMove.StateId)) return true;
+                        if (nextMove.Intents != null)
+                        {
+                            foreach (var it in nextMove.Intents)
+                            {
+                                if (it == null) continue;
+                                if (ContainsDormantWord(it.GetType().Name)) return true;
+                                try { if (ContainsDormantWord(it.IntentType.ToString())) return true; }
+                                catch { }
+                            }
+                        }
+                    }
+                }
+                if (c.Powers != null)
+                {
+                    foreach (var p in c.Powers)
+                    {
+                        if (p == null || p.Amount <= 0) continue;
+                        string pn = p.GetType().Name;
+                        if (pn.IndexOf("Asleep", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            pn.IndexOf("Sleep", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            pn.IndexOf("Dormant", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            pn.IndexOf("Snooze", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // Every living enemy must be dormant; a mixed encounter is a real fight, not a stand-pat window.
+        public static bool AllLivingEnemiesDormant(CombatState cs)
+        {
+            try
+            {
+                if (cs == null || cs.Enemies == null) return false;
+                int alive = 0;
+                foreach (var e in cs.Enemies)
+                {
+                    if (e == null || !e.IsAlive) continue;
+                    alive++;
+                    if (!IsCreatureTrulyDormant(e)) return false;
+                }
+                return alive > 0;
+            }
+            catch { return false; }
+        }
+
+        public static bool IsPureBlockCard(CardModel card)
+        {
+            try
+            {
+                if (card == null || card.Type != CardType.Skill) return false;
+                return IsDefense(card);
+            }
+            catch { return false; }
+        }
+
+        // Directive #5.91 T2.2: is there at least one affordable+playable card that actually does
+        // something on a non-attacking turn? Pure block skills are deliberately excluded - dumping a
+        // Defend into a turn where nothing attacks is the exact behaviour we want to stop.
+        public static bool P2HasMeaningfulPlayable(Player p2, out bool hasAttack)
+        {
+            hasAttack = false;
+            try
+            {
+                if (p2 == null || p2.PlayerCombatState == null) return false;
+                var hand = PileType.Hand.GetPile(p2);
+                if (hand == null || hand.Cards == null) return false;
+                foreach (var card in hand.Cards)
+                {
+                    if (card == null) continue;
+                    if (!CanCardBePlayedByPlayer(card, p2)) continue;
+                    if (card.Type == CardType.Attack) { hasAttack = true; return true; }
+                    if (card.Type == CardType.Power) return true;
+                    if (card.Type == CardType.Skill && !IsPureBlockCard(card)) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // Directive #5.90 T1: true when CombatSolver completed a real search this turn AND its plan for
+        // THIS turn is already satisfied. Every "cards-affordable" guard consults this so a deliberate
+        // EndTurn (or a deliberate stand-pat against non-attacking/sleeping enemies) is never
+        // second-guessed into plan-empty recovery + greedy play.
+        //
+        // Why it is needed: CombatSolver enqueues EndPlayerTurnAction from *inside* DeployCurrentTurn,
+        // i.e. BEFORE CompleteDeploymentPostfix sets HasCompletedDeploymentThisTurn. So the gate saw
+        // deploymentComplete=false, deferred with reason=cards-affordable, ran ExecutePlanEmptyRecovery
+        // from inside the deployment (PlayerActionsDisabled=true) -> SEARCH_REJECT -> 1.2s later the
+        // watchdog ran TryFallbackGreedy and dumped P2's whole hand (10 of 11 boss turns).
+        //
+        // Directive #5.91 T2 tightening: #5.90's version produced FALSE POSITIVES that were just as
+        // expensive as the bug it fixed -
+        //   * Case A used P2EnqueuedCardActionsThisTurn, which is permanently 0 because the solver plays
+        //     through EnqueueManualPlay, so `remaining` was meaningless;
+        //   * Case A waved through `planned == 1`, which is exactly the TURN_LAYER_BUDGET truncation
+        //     signature (play_depth=1);
+        //   * Case B treated `intents=[attack×0, ...]` as "enemy is asleep", but SIPHON_MOVE also has
+        //     zero attacks - P2 then ended turns with 3 energy and playable attacks in hand.
+        public static bool HasSolverSatisfiedTurnPlan(Player p2, CombatState cs)
+        {
+            try
+            {
+                // plan-len <= 0 means no real search result for this turn (default -1 / timeout / fail).
+                if (P2PlanLengthThisTurn <= 0) return false;
+                if (cs == null)
+                {
+                    var cm0 = CombatManager.Instance;
+                    cs = cm0 != null ? cm0.DebugOnlyGetState() : null;
+                }
+
+                int planned = P2PlannedCardActionsThisTurn;
+                // T2.1: the solver's EnqueueManualPlay path never increments P2EnqueuedCardActionsThisTurn
+                // (it stayed 0 for whole runs); the real count lands in P2PlayedCardsThisTurn.
+                int executed = Math.Max(P2EnqueuedCardActionsThisTurn, P2PlayedCardsThisTurn);
+                int remaining = Math.Max(0, planned - executed);
+
+                bool hasAttack = false;
+                bool hasMeaningful = P2HasMeaningfulPlayable(p2, out hasAttack);
+                int energy = (p2 != null && p2.PlayerCombatState != null) ? p2.PlayerCombatState.Energy : 0;
+
+                if (planned > 0)
+                {
+                    if (executed < planned || remaining > 0) return false;
+
+                    // Case A1: multi-card plan fully executed - trustworthy.
+                    if (planned >= 2) return true;
+
+                    // Case A2: planned == 1. Could be a genuine single-card turn, or a truncation. Only
+                    // trust it when P2 provably cannot do anything more, or a recalc already confirmed it.
+                    if (energy <= 0) return true;
+                    if (!hasMeaningful) return true;
+                    if (PlanEmptyRecoveryAttemptedThisTurn) return true;
+                    P2SuspectTruncatedAfterOneCardThisTurn = true;
+                    GD.Print(string.Format("[AiTeammate][Coord] solver-plan-suspect-truncated reason=planned-one-with-playables plan-len={0} planned={1} played={2} energy={3} hand={4} attack={5} turn={6}",
+                        P2PlanLengthThisTurn, planned, executed, energy, GetPlayerHandCardCount(p2), hasAttack, TurnNumber));
+                    return false;
+                }
+
+                // planned == 0 - only an intentional stand-pat qualifies.
+                if (P2PlayedCardsThisTurn > 0) return false;
+
+                // B1: every living enemy is objectively asleep / dormant.
+                if (AllLivingEnemiesDormant(cs))
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] solver-plan-satisfied reason=enemy-dormant plan-len={0} turn={1}", P2PlanLengthThisTurn, TurnNumber));
+                    return true;
+                }
+
+                // B2: no enemy attacks this turn AND P2 has nothing meaningful left to play. Any playable
+                // attack / power / non-block skill means a 0-card turn is NOT satisfied (RC-2).
+                if (!string.IsNullOrEmpty(TurnStartIntentsSummary) &&
+                    TurnStartIntentsSummary.StartsWith("intents=[attack×0,", StringComparison.Ordinal))
+                {
+                    if (!hasMeaningful) return true;
+                    GD.Print(string.Format("[AiTeammate][Coord] solver-plan-not-satisfied reason=non-attack-turn-with-playables plan-len={0} energy={1} hand={2} attack={3} turn={4}",
+                        P2PlanLengthThisTurn, energy, GetPlayerHandCardCount(p2), hasAttack, TurnNumber));
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        // Directive #5.87: true when CombatSolver actually produced / enqueued / is still executing
+        // card actions. "plan-empty" recovery must never fire while this is true.
+        public static bool HasP2DeploymentBacklog(Player p2)
+        {
+            try
+            {
+                if (P2PlannedCardActionsThisTurn > 0) return true;
+                if (P2EnqueuedCardActionsThisTurn > 0) return true;
+                if (IsPlayer2ActionInFlight()) return true;
+                if (p2 != null && GetP2QueuePlayCardCount(p2.NetId) > 0) return true;
+            }
+            catch { }
+            return false;
+        }
+
         public static string DetectSolverEarlyEnd(Player p2, out bool hasPlayable, out bool hasAttack)
         {
             hasPlayable = HasPlayableAttackOrSkill(p2, out hasAttack);
-            if (!hasPlayable || P2PlayedCardsThisTurn > 0) return null;
+            if (!hasPlayable) return null;
+            // Directive #5.90 T1: a satisfied solver plan is never "plan-empty".
+            if (HasSolverSatisfiedTurnPlan(p2, null))
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] solver-early-end-suppressed reason=plan-satisfied plan-len={0} planned={1} played={2} enqueued={3}", P2PlanLengthThisTurn, P2PlannedCardActionsThisTurn, P2PlayedCardsThisTurn, P2EnqueuedCardActionsThisTurn));
+                return null;
+            }
+            if (P2PlayedCardsThisTurn > 0) return null;
+            // Directive #5.87: a queued/in-flight/planned card action means the solver DID produce a
+            // plan. Treating that as "plan-empty" cancelled the live deployment and fell back to greedy.
+            if (HasP2DeploymentBacklog(p2))
+            {
+                GD.Print(string.Format("[AiTeammate][Coord] solver-early-end-suppressed reason=deployment-backlog plan-len={0} plan-card={1} enqueued={2} played={3}", P2PlanLengthThisTurn, P2PlannedCardActionsThisTurn, P2EnqueuedCardActionsThisTurn, P2PlayedCardsThisTurn));
+                return null;
+            }
             if (P2PlanLengthThisTurn <= 0) return P2SearchStatusThisTurn == "timeout" ? "search-timeout" : "plan-empty";
             if (hasAttack && P2PlanHasCardActionThisTurn && !P2PlanHasAttackThisTurn) return "objective";
             return null;
@@ -9098,14 +12465,43 @@ namespace AiTeammate
 
 
 
-        public static bool IsPlayer2ActionInFlight(bool checkScopeDepth)
+        // Directive #5.48 Priority 1 & #5.57: Overload with currentAction to prevent self-interception
+        public static bool IsPlayer2ActionInFlight(bool checkScopeDepth, MegaCrit.Sts2.Core.GameActions.GameAction currentAction)
         {
             try
             {
                 ulong p2NetId = GetPlayer2NetId();
                 if (p2NetId == 0) return false;
-                if (CurrentExecutingActionOwnerNetId == p2NetId) return true;
-                if (checkScopeDepth && P2ActionSenderScopeDepth > 0) return true;
+
+                // Directive #5.57: EndPlayerTurnAction executing its own turn transition must never block itself via scopes or executing ID
+                if (currentAction is MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction)
+                {
+                    var aqsEnd = RunManager.Instance != null ? RunManager.Instance.ActionQueueSet : null;
+                    if (aqsEnd != null && aqsEnd.ActionQueueIsPaused(p2NetId)) return true;
+                    int cardQueueCount = GetP2QueuePlayCardCount(p2NetId);
+                    return cardQueueCount > 0;
+                }
+
+                if (CurrentExecutingActionOwnerNetId == p2NetId)
+                {
+                    if (currentAction != null && CurrentExecutingActionInstance != null && object.ReferenceEquals(CurrentExecutingActionInstance, currentAction))
+                    {
+                        // Exclude the action itself being checked
+                    }
+                    else
+                    {
+                        return true;
+                    }
+                }
+                if (checkScopeDepth)
+                {
+                    int effectiveDepth = P2ActionSenderScopeDepth;
+                    if (currentAction != null && AttributionPatches.HasP2SenderScope(currentAction))
+                    {
+                        effectiveDepth--;
+                    }
+                    if (effectiveDepth > 0) return true;
+                }
 
                 var aqs = RunManager.Instance != null ? RunManager.Instance.ActionQueueSet : null;
                 if (aqs != null && aqs.ActionQueueIsPaused(p2NetId)) return true;
@@ -9117,9 +12513,14 @@ namespace AiTeammate
             return false;
         }
 
+        public static bool IsPlayer2ActionInFlight(bool checkScopeDepth)
+        {
+            return IsPlayer2ActionInFlight(checkScopeDepth, null);
+        }
+
         public static bool IsPlayer2ActionInFlight()
         {
-            return IsPlayer2ActionInFlight(true);
+            return IsPlayer2ActionInFlight(true, null);
         }
 
         public static void OnProcessTick()
@@ -9145,6 +12546,13 @@ namespace AiTeammate
                         }
                     }
                     return;
+                }
+
+                // Directive #5.57: Native phase advance observer for decoupled P1 UI restoration
+                if (P1RestorePendingForPhaseAdvance && !IsPlayPhase())
+                {
+                    P1RestorePendingForPhaseAdvance = false;
+                    ExecuteFixedP1UiRestore(GetCurrentCombatPhaseString(), "phase-advance");
                 }
 
                 var now = DateTime.UtcNow;
@@ -9196,6 +12604,12 @@ namespace AiTeammate
 
                 CheckMidDeploymentAndSearchWatchdog(now);
                 CheckNativeChoiceContinuation("process-tick");
+                if (PendingPotionContinuation && !PotionContinuationScheduled && (now - _lastPotionAttemptTime).TotalMilliseconds >= 150.0)
+                {
+                    _lastPotionAttemptTime = now;
+                    CheckPotionContinuation("process-tick");
+                }
+                CheckPlanEmptyRecoveryWatchdog(now);
                 if (HasRetriedNativeChoiceRecoveryThisTurn && !IsDeploying && !IsSolverSearching() && NativeChoiceFailureTime != DateTime.MinValue && (now - NativeChoiceFailureTime).TotalSeconds >= 2.5)
                 {
                     if (P2ActionSenderScopeDepth == 0)
@@ -9227,7 +12641,9 @@ namespace AiTeammate
                     LastActionExecutedTime != DateTime.MinValue && (now - LastActionExecutedTime).TotalSeconds > 1.8 &&
                     !IsPlayer2ActionInFlight())
                 {
-                    GD.Print(string.Format("[AiTeammate][Coord] deployment-draw-stall-fast-finish: elapsed={0:F2}s after action execution, finishing deployment and running greedy continuation", (now - LastActionExecutedTime).TotalSeconds));
+                    P2GreedyTriggerHint = "draw-stall-fast-finish";
+                    NoteSolverEvent("deployment-draw-stall-fast-finish");
+                    GD.Print(string.Format("[AiTeammate][Coord] deployment-draw-stall-fast-finish: elapsed={0:F2}s after action execution, finishing deployment and running greedy continuation trigger=draw-stall-fast-finish", (now - LastActionExecutedTime).TotalSeconds));
                     IsDeploying = false;
                     HoldActive = false;
                     HasCompletedDeploymentThisTurn = true;
@@ -9267,8 +12683,9 @@ namespace AiTeammate
                 // #5.26: explicit evidence when the live solver deploys without
                 // entering any Harmony-observed deployment method.
                 if (P2TelemetryTurn == TurnNumber && !P2DeployHookObservedThisTurn && !P2DeployHookMissLoggedThisTurn &&
+                    !RecalcRequestedThisTurn && !StallRecalcTriggered && !PlanEmptyRecoveryAttemptedThisTurn &&
                     TurnStartTime != DateTime.MinValue && (now - TurnStartTime).TotalSeconds >= 3.5 &&
-                    !IsSolverSearching() && !IsSolverDeploying())
+                    !IsSolverSearching() && !IsSolverDeploying() && !IsDeploying)
                 {
                     var telemetryState = CombatManager.Instance != null ? CombatManager.Instance.DebugOnlyGetState() : null;
                     Player telemetryP2 = telemetryState != null && telemetryState.Players != null && telemetryState.Players.Count > 1 ? telemetryState.Players[telemetryState.Players.Count - 1] : null;
@@ -9526,31 +12943,109 @@ namespace AiTeammate
         public static int CurrentEventPage = 0;
         public static bool LastChildCardChoiceCompleted = false;
 
-        // Directive #5.33: In-flight event choice idempotency & state machine tracking
-        public static string InFlightEventKey = null;
-        public static string InFlightEventId = null;
-        public static int InFlightEventPage = 0;
-        public static string InFlightOptionsFingerprint = null;
-        public static int InFlightChosenIndex = -1;
-        public static string InFlightPickId = null;
-        public static string InFlightEventKind = null;
-        public static string InFlightReason = null;
-        public static string InFlightSource = null;
-        public static string InFlightGeneration = null;
-        public static DateTime InFlightEventSubmitTime = DateTime.MinValue;
-        public static int InFlightEventRetryCount = 0;
-        public static bool InFlightHadPendingChoice = false;
-        private static readonly HashSet<string> AbortedEventKeys = new HashSet<string>();
-        private static readonly HashSet<string> ConfirmedEventKeys = new HashSet<string>();
+        // Directive #5.84: P2 multi-stage event finite state machine.
+        public enum P2EventMachineState
+        {
+            Idle,
+            PendingInitial,
+            Submitted,
+            WaitingSubPage,
+            PendingNextChoice,
+            Completed,
+            FailedOpen
+        }
+
+        private const int MaxP2EventChoices = 8;
+        private const double P2EventSubmitTimeoutSeconds = 2.0;
+        private const double P2EventSubChoiceTimeoutSeconds = 15.0;
+
+        public static P2EventMachineState P2EventState = P2EventMachineState.Idle;
+        public static bool P2EventManualTakeover = false;
+        public static bool EventStrategistMissing = false;
+
+        private static object P2EventRef = null;
+        private static string P2EventId = null;
+        private static string P2EventFingerprint = null;
+        private static string P2EventLastSubmittedFingerprint = null;
+        private static string P2EventLastOptionsFingerprint = null;
+        private static int P2EventLastOptionCount = 0;
+        private static int P2EventPageOrdinal = 0;
+        private static int P2EventSubmitCount = 0;
+        private static DateTime P2EventSubmitTime = DateTime.MinValue;
+        private static DateTime P2EventSubChoiceTime = DateTime.MinValue;
+        private static DateTime P2EventEmptySince = DateTime.MinValue;
+        private static Task P2EventPendingTask = null;
+        private static object P2EventChosenOption = null;
+        private static int P2EventChosenIndex = -1;
+        private static bool P2EventSubmitInProgress = false;
+        private static readonly HashSet<string> P2EventSubmittedFingerprints = new HashSet<string>();
+        private static readonly HashSet<string> P2EventConfirmedFingerprints = new HashSet<string>();
+        private static readonly HashSet<string> P2EventAbortedFingerprints = new HashSet<string>();
+        private static readonly HashSet<string> P2EventDedupLogged = new HashSet<string>();
+        private static readonly Dictionary<string, HashSet<int>> P2EventUsedIndicesByOptions = new Dictionary<string, HashSet<int>>();
+        private static readonly Dictionary<string, string> P2EventSignalLogKeys = new Dictionary<string, string>();
+
+        private static void ResetP2EventMachine()
+        {
+            P2EventState = P2EventMachineState.Idle;
+            P2EventRef = null;
+            P2EventId = null;
+            P2EventFingerprint = null;
+            P2EventLastSubmittedFingerprint = null;
+            P2EventLastOptionsFingerprint = null;
+            P2EventLastOptionCount = 0;
+            P2EventPageOrdinal = 0;
+            P2EventSubmitCount = 0;
+            P2EventSubmitTime = DateTime.MinValue;
+            P2EventSubChoiceTime = DateTime.MinValue;
+            P2EventEmptySince = DateTime.MinValue;
+            P2EventPendingTask = null;
+            P2EventChosenOption = null;
+            P2EventChosenIndex = -1;
+            P2EventSubmitInProgress = false;
+            P2EventManualTakeover = false;
+            P2EventSubmittedFingerprints.Clear();
+            P2EventConfirmedFingerprints.Clear();
+            P2EventAbortedFingerprints.Clear();
+            P2EventDedupLogged.Clear();
+            P2EventUsedIndicesByOptions.Clear();
+            P2EventSignalLogKeys.Clear();
+            CurrentEventPage = 0;
+        }
+
+        private static void StartP2EventMachine(object ev, string eventId, string generation)
+        {
+            ResetP2EventMachine();
+            P2EventRef = ev;
+            P2EventId = eventId;
+            CurrentEventId = eventId;
+            CurrentEventPage = 0;
+        }
+
+        public static bool ShouldLogEventController(string signal, string detail)
+        {
+            string key = P2EventState.ToString() + "|" + P2EventPageOrdinal + "|" + (detail ?? "");
+            string sig = signal ?? "signal";
+            string last;
+            if (P2EventSignalLogKeys.TryGetValue(sig, out last) && string.Equals(last, key, StringComparison.Ordinal)) return false;
+            P2EventSignalLogKeys[sig] = key;
+            return true;
+        }
+
+        private static void SetP2EventState(P2EventMachineState next, string fingerprint)
+        {
+            if (!string.IsNullOrEmpty(fingerprint)) P2EventFingerprint = fingerprint;
+            if (P2EventState == next) return;
+            P2EventState = next;
+            GD.Print(string.Format("[AiTeammate][Event] event-state owner=P2 state={0} fingerprint={1}", next.ToString(), string.IsNullOrEmpty(fingerprint) ? "none" : fingerprint));
+        }
 
         public static void ResetInFlightEventState()
         {
-            InFlightEventKey = null;
             CurrentEventPage = 0;
             CurrentEventId = null;
             LastChildCardChoiceCompleted = false;
-            InFlightEventRetryCount = 0;
-            InFlightHadPendingChoice = false;
+            ResetP2EventMachine();
         }
 
         public static string ComputeOptionsFingerprint(System.Collections.IList options)
@@ -9662,28 +13157,127 @@ namespace AiTeammate
             int relicsBought = 0;
             int cardsBought = 0;
             int potionsBought = 0;
+            List<string> rejectedCandidates = new List<string>();
 
             try
             {
+                // Directive #5.45: Stage 0 - Full Shelf Stock Scan
+                List<MerchantCardEntry> availableCards = new List<MerchantCardEntry>();
+                if (p2Inventory.CardEntries != null)
+                {
+                    foreach (var c in p2Inventory.CardEntries) if (c != null) availableCards.Add(c);
+                }
+                else
+                {
+                    if (p2Inventory.CharacterCardEntries != null)
+                        foreach (var c in p2Inventory.CharacterCardEntries) if (c != null) availableCards.Add(c);
+                    if (p2Inventory.ColorlessCardEntries != null)
+                        foreach (var c in p2Inventory.ColorlessCardEntries) if (c != null) availableCards.Add(c);
+                }
+
+                int relicCount = (p2Inventory.RelicEntries != null) ? p2Inventory.RelicEntries.Count : 0;
+                int cardCount = availableCards.Count;
+                int potionCount = (p2Inventory.PotionEntries != null) ? p2Inventory.PotionEntries.Count : 0;
+                int removalCost = (p2Inventory.CardRemovalEntry != null) ? p2Inventory.CardRemovalEntry.Cost : -1;
+                bool removalAvailable = (p2Inventory.CardRemovalEntry != null) && p2Inventory.CardRemovalEntry.IsStocked && !p2Inventory.CardRemovalEntry.Used;
+
+                GD.Print(string.Format("[AiTeammate][Shop] shop-inventory-scan owner=P2 relics={0} cards={1} potions={2} removal_cost={3} removal_available={4}",
+                    relicCount, cardCount, potionCount, removalCost, removalAvailable));
+
+                if (p2Inventory.RelicEntries != null)
+                {
+                    foreach (var r in p2Inventory.RelicEntries)
+                    {
+                        if (r == null) continue;
+                        string rid = (r.Model != null && r.Model.Id != null) ? r.Model.Id.ToString() : "unknown";
+                        GD.Print(string.Format("[AiTeammate][Shop] shop-stock-item kind=relic id={0} cost={1} stocked={2}", rid, r.Cost, r.IsStocked));
+                    }
+                }
+
+                foreach (var c in availableCards)
+                {
+                    if (c == null) continue;
+                    string cid = (c.CreationResult != null && c.CreationResult.Card != null && c.CreationResult.Card.Id != null) ? c.CreationResult.Card.Id.ToString() : "unknown";
+                    GD.Print(string.Format("[AiTeammate][Shop] shop-stock-item kind=card id={0} cost={1} stocked={2} sale={3}", cid, c.Cost, c.IsStocked, c.IsOnSale));
+                }
+
+                if (p2Inventory.PotionEntries != null)
+                {
+                    foreach (var pot in p2Inventory.PotionEntries)
+                    {
+                        if (pot == null) continue;
+                        string pid = (pot.Model != null && pot.Model.Id != null) ? pot.Model.Id.ToString() : "unknown";
+                        GD.Print(string.Format("[AiTeammate][Shop] shop-stock-item kind=potion id={0} cost={1} stocked={2}", pid, pot.Cost, pot.IsStocked));
+                    }
+                }
+
+                if (p2Inventory.CardRemovalEntry != null)
+                {
+                    GD.Print(string.Format("[AiTeammate][Shop] shop-stock-item kind=removal id=card-removal cost={0} stocked={1}",
+                        p2Inventory.CardRemovalEntry.Cost, p2Inventory.CardRemovalEntry.IsStocked && !p2Inventory.CardRemovalEntry.Used));
+                }
+
+                // Directive #5.94 T3: Execute P2 shop plan via SpireStrategist Core (TryAutoShopP2)
+                try
+                {
+                    TryAutoShopP2(p2);
+                }
+                catch (Exception exShop)
+                {
+                    GD.PrintErr("[AiTeammate][Shop] TryAutoShopP2 execution exception: " + exShop);
+                }
+
+                // Directive #5.94: Stages 1, 2, and 3 are now handled by TryAutoShopP2 (Core + reserve management).
+                if (false)
+                {
                 // Stage 1: Card Removal
-                if (ShopCardRemovalEnabled && p2Inventory.CardRemovalEntry != null)
+                if (!ShopCardRemovalEnabled)
+                {
+                    rejectedCandidates.Add("removal:card-removal (feature-disabled)");
+                    GD.Print("[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost=-1 reason=feature-disabled");
+                }
+                else if (p2Inventory.CardRemovalEntry == null)
+                {
+                    rejectedCandidates.Add("removal:card-removal (invalid-entry)");
+                    GD.Print("[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost=-1 reason=invalid-entry");
+                }
+                else
                 {
                     var removalEntry = p2Inventory.CardRemovalEntry;
-                    if (!removalEntry.Used && removalEntry.IsStocked && p2.Gold >= removalEntry.Cost)
+                    int rCost = removalEntry.Cost;
+                    if (removalEntry.Used)
+                    {
+                        rejectedCandidates.Add("removal:card-removal (already-purchased)");
+                        GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost={0} reason=already-purchased", rCost));
+                    }
+                    else if (!removalEntry.IsStocked)
+                    {
+                        rejectedCandidates.Add("removal:card-removal (not-stocked)");
+                        GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost={0} reason=not-stocked", rCost));
+                    }
+                    else if (p2.Gold < rCost)
+                    {
+                        rejectedCandidates.Add(string.Format("removal:card-removal (insufficient-gold:cost={0},gold={1})", rCost, p2.Gold));
+                        GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost={0} reason=insufficient-gold", rCost));
+                    }
+                    else if (p2.Deck == null || p2.Deck.Cards == null || p2.Deck.Cards.Count < 8)
+                    {
+                        int dCount = (p2.Deck != null && p2.Deck.Cards != null) ? p2.Deck.Cards.Count : 0;
+                        rejectedCandidates.Add(string.Format("removal:card-removal (deck-too-small:count={0})", dCount));
+                        GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost={0} reason=deck-too-small", rCost));
+                    }
+                    else
                     {
                         CardModel bestRemovalCandidate = null;
                         double bestRemovalScore = double.MaxValue;
-                        if (p2.Deck != null && p2.Deck.Cards != null && p2.Deck.Cards.Count >= 8)
+                        foreach (CardModel c in p2.Deck.Cards)
                         {
-                            foreach (CardModel c in p2.Deck.Cards)
+                            if (c == null || !IsCardRemovable(c)) continue;
+                            double s = GetCardRemovalPriorityScore(c);
+                            if (s < bestRemovalScore)
                             {
-                                if (c == null || !IsCardRemovable(c)) continue;
-                                double s = GetCardRemovalPriorityScore(c);
-                                if (s < bestRemovalScore)
-                                {
-                                    bestRemovalScore = s;
-                                    bestRemovalCandidate = c;
-                                }
+                                bestRemovalScore = s;
+                                bestRemovalCandidate = c;
                             }
                         }
 
@@ -9713,11 +13307,23 @@ namespace AiTeammate
                                 removedCount++;
                                 string targetCardId = !string.IsNullOrEmpty(LastShopRemovalTargetCardId) ? LastShopRemovalTargetCardId : bestRemovalCandidate.Id.ToString();
                                 GD.Print(string.Format("[AiTeammate][Shop] shop-resolved kind=removal id=card-removal cost={0} target={1} gold_after={2}", cost, targetCardId, p2.Gold));
+
+                                bool stillInDeck = false;
+                                if (p2.Deck != null && p2.Deck.Cards != null)
+                                {
+                                    foreach (var c in p2.Deck.Cards) if (c == bestRemovalCandidate) { stillInDeck = true; break; }
+                                }
+                                GD.Print(string.Format("[AiTeammate][Shop] inventory-confirmed kind=removal id={0} confirmed={1}", targetCardId, !stillInDeck));
                             }
                             else
                             {
                                 GD.Print("[AiTeammate][Shop] shop-failed kind=removal reason=purchase-returned-false");
                             }
+                        }
+                        else
+                        {
+                            rejectedCandidates.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "removal:card-removal (below-score-threshold:score={0:F1})", bestRemovalScore));
+                            GD.Print(string.Format(System.Globalization.CultureInfo.InvariantCulture, "[AiTeammate][Shop] shop-item-skipped kind=removal id=card-removal cost={0} reason=below-score-threshold", rCost));
                         }
                     }
                 }
@@ -9732,12 +13338,58 @@ namespace AiTeammate
 
                         foreach (MerchantRelicEntry entry in p2Inventory.RelicEntries)
                         {
-                            if (entry == null || !entry.IsStocked || entry.Model == null) continue;
-                            if (p2.Gold < entry.Cost) continue;
-                            if (!IsShopRelicSafeForBackgroundPurchase(entry.Model)) continue;
+                            if (entry == null || entry.Model == null)
+                            {
+                                if (pass == 0)
+                                {
+                                    rejectedCandidates.Add("relic:unknown (invalid-entry)");
+                                    GD.Print("[AiTeammate][Shop] shop-item-skipped kind=relic id=unknown cost=-1 reason=invalid-entry");
+                                }
+                                continue;
+                            }
+                            string rid = entry.Model.Id.ToString();
+                            int cost = entry.Cost;
+
+                            if (!entry.IsStocked)
+                            {
+                                if (pass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("relic:{0} (already-purchased)", rid));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=relic id={0} cost={1} reason=already-purchased", rid, cost));
+                                }
+                                continue;
+                            }
+                            if (p2.Gold < cost)
+                            {
+                                if (pass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("relic:{0} (insufficient-gold:cost={1},gold={2})", rid, cost, p2.Gold));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=relic id={0} cost={1} reason=insufficient-gold", rid, cost));
+                                }
+                                continue;
+                            }
+                            if (!IsShopRelicSafeForBackgroundPurchase(entry.Model))
+                            {
+                                if (pass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("relic:{0} (unsafe-background-purchase)", rid));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=relic id={0} cost={1} reason=unsafe-background-purchase", rid, cost));
+                                }
+                                continue;
+                            }
 
                             double score = EvaluateShopRelicScore(p2, entry.Model);
-                            if (score >= 15.0 && score > bestRelicScore)
+                            if (score < 15.0)
+                            {
+                                if (pass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "relic:{0} (below-score-threshold:score={1:F1})", rid, score));
+                                    GD.Print(string.Format(System.Globalization.CultureInfo.InvariantCulture, "[AiTeammate][Shop] shop-item-skipped kind=relic id={0} cost={1} reason=below-score-threshold", rid, cost));
+                                }
+                                continue;
+                            }
+
+                            if (score > bestRelicScore)
                             {
                                 bestRelicScore = score;
                                 bestRelicEntry = entry;
@@ -9762,6 +13414,13 @@ namespace AiTeammate
                             {
                                 relicsBought++;
                                 GD.Print(string.Format("[AiTeammate][Shop] shop-resolved kind=relic id={0} cost={1} gold_after={2}", rid, cost, p2.Gold));
+
+                                bool hasRelic = false;
+                                if (p2.Relics != null)
+                                {
+                                    foreach (var r in p2.Relics) if (r != null && r.Id != null && r.Id.Equals(bestRelicEntry.Model.Id)) { hasRelic = true; break; }
+                                }
+                                GD.Print(string.Format("[AiTeammate][Shop] inventory-confirmed kind=relic id={0} confirmed={1}", rid, hasRelic));
                             }
                             else
                             {
@@ -9779,22 +13438,13 @@ namespace AiTeammate
                 // Stage 3: Cards (Up to 2)
                 if (AutoShopEnabled)
                 {
-                    List<MerchantCardEntry> availableCards = new List<MerchantCardEntry>();
-                    if (p2Inventory.CardEntries != null)
-                    {
-                        foreach (var c in p2Inventory.CardEntries) if (c != null) availableCards.Add(c);
-                    }
-                    else
-                    {
-                        if (p2Inventory.CharacterCardEntries != null)
-                            foreach (var c in p2Inventory.CharacterCardEntries) if (c != null) availableCards.Add(c);
-                        if (p2Inventory.ColorlessCardEntries != null)
-                            foreach (var c in p2Inventory.ColorlessCardEntries) if (c != null) availableCards.Add(c);
-                    }
-
                     for (int cardPass = 0; cardPass < 2; cardPass++)
                     {
-                        if (cardPass == 1 && p2.Gold < 100) break;
+                        if (cardPass == 1 && p2.Gold < 100)
+                        {
+                            GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=card id=pass-2 cost=-1 reason=reserve-gold-below-100 gold={0}", p2.Gold));
+                            break;
+                        }
                         double threshold = (cardPass == 0) ? 60.0 : 68.0;
 
                         MerchantCardEntry bestCardEntry = null;
@@ -9802,13 +13452,51 @@ namespace AiTeammate
 
                         foreach (MerchantCardEntry entry in availableCards)
                         {
-                            if (entry == null || !entry.IsStocked || entry.CreationResult == null || entry.CreationResult.Card == null) continue;
-                            if (p2.Gold < entry.Cost) continue;
+                            if (entry == null || entry.CreationResult == null || entry.CreationResult.Card == null)
+                            {
+                                if (cardPass == 0)
+                                {
+                                    rejectedCandidates.Add("card:unknown (invalid-entry)");
+                                    GD.Print("[AiTeammate][Shop] shop-item-skipped kind=card id=unknown cost=-1 reason=invalid-entry");
+                                }
+                                continue;
+                            }
+                            string cid = entry.CreationResult.Card.Id.ToString();
+                            int cost = entry.Cost;
+
+                            if (!entry.IsStocked)
+                            {
+                                if (cardPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("card:{0} (already-purchased)", cid));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=card id={0} cost={1} reason=already-purchased", cid, cost));
+                                }
+                                continue;
+                            }
+                            if (p2.Gold < cost)
+                            {
+                                if (cardPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("card:{0} (insufficient-gold:cost={1},gold={2})", cid, cost, p2.Gold));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=card id={0} cost={1} reason=insufficient-gold", cid, cost));
+                                }
+                                continue;
+                            }
 
                             double s = EvaluateShopCardEntryScore(p2, entry);
                             double effThreshold = (cardPass == 0 && entry.IsOnSale) ? 52.0 : threshold;
 
-                            if (s >= effThreshold && s > bestCardScore)
+                            if (s < effThreshold)
+                            {
+                                if (cardPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "card:{0} (below-score-threshold:score={1:F1},needed={2:F1})", cid, s, effThreshold));
+                                    GD.Print(string.Format(System.Globalization.CultureInfo.InvariantCulture, "[AiTeammate][Shop] shop-item-skipped kind=card id={0} cost={1} reason=below-score-threshold", cid, cost));
+                                }
+                                continue;
+                            }
+
+                            if (s > bestCardScore)
                             {
                                 bestCardScore = s;
                                 bestCardEntry = entry;
@@ -9835,6 +13523,13 @@ namespace AiTeammate
                             {
                                 cardsBought++;
                                 GD.Print(string.Format("[AiTeammate][Shop] shop-resolved kind=card id={0} cost={1} gold_after={2}", cid, cost, p2.Gold));
+
+                                bool inDeck = false;
+                                if (p2.Deck != null && p2.Deck.Cards != null)
+                                {
+                                    foreach (var c in p2.Deck.Cards) if (c != null && c.Id != null && c.Id.Equals(card.Id)) { inDeck = true; break; }
+                                }
+                                GD.Print(string.Format("[AiTeammate][Shop] inventory-confirmed kind=card id={0} confirmed={1}", cid, inDeck));
                             }
                             else
                             {
@@ -9848,26 +13543,85 @@ namespace AiTeammate
                         }
                     }
                 }
+                } // End if (false) for legacy Stages 1, 2, 3
 
                 // Stage 4: Potions (Up to 2 while slots open)
                 if (AutoShopEnabled && p2Inventory.PotionEntries != null)
                 {
                     for (int potPass = 0; potPass < 2; potPass++)
                     {
-                        if (!HasOpenPotionSlot(p2)) break;
+                        if (!HasOpenPotionSlot(p2))
+                        {
+                            if (potPass == 0)
+                            {
+                                foreach (MerchantPotionEntry entry in p2Inventory.PotionEntries)
+                                {
+                                    if (entry == null || entry.Model == null) continue;
+                                    string pid = entry.Model.Id.ToString();
+                                    rejectedCandidates.Add(string.Format("potion:{0} (no-open-potion-slot)", pid));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=potion id={0} cost={1} reason=no-open-potion-slot", pid, entry.Cost));
+                                }
+                            }
+                            break;
+                        }
 
                         MerchantPotionEntry bestPotEntry = null;
                         double bestPotScore = -1.0;
 
                         foreach (MerchantPotionEntry entry in p2Inventory.PotionEntries)
                         {
-                            if (entry == null || !entry.IsStocked || entry.Model == null) continue;
-                            if (p2.Gold < entry.Cost) continue;
-                            string pid = entry.Model.Id.ToString().ToUpperInvariant();
-                            if (pid.Contains("FOUL_POTION")) continue;
+                            if (entry == null || entry.Model == null)
+                            {
+                                if (potPass == 0)
+                                {
+                                    rejectedCandidates.Add("potion:unknown (invalid-entry)");
+                                    GD.Print("[AiTeammate][Shop] shop-item-skipped kind=potion id=unknown cost=-1 reason=invalid-entry");
+                                }
+                                continue;
+                            }
+                            string pid = entry.Model.Id.ToString();
+                            int cost = entry.Cost;
+
+                            if (!entry.IsStocked)
+                            {
+                                if (potPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("potion:{0} (already-purchased)", pid));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=potion id={0} cost={1} reason=already-purchased", pid, cost));
+                                }
+                                continue;
+                            }
+                            if (p2.Gold < cost)
+                            {
+                                if (potPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("potion:{0} (insufficient-gold:cost={1},gold={2})", pid, cost, p2.Gold));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=potion id={0} cost={1} reason=insufficient-gold", pid, cost));
+                                }
+                                continue;
+                            }
+                            if (pid.ToUpperInvariant().Contains("FOUL_POTION"))
+                            {
+                                if (potPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format("potion:{0} (unsafe-background-purchase)", pid));
+                                    GD.Print(string.Format("[AiTeammate][Shop] shop-item-skipped kind=potion id={0} cost={1} reason=unsafe-background-purchase", pid, cost));
+                                }
+                                continue;
+                            }
 
                             double s = EvaluateShopPotionScore(entry.Model);
-                            if (s >= 50.0 && s > bestPotScore)
+                            if (s < 50.0)
+                            {
+                                if (potPass == 0)
+                                {
+                                    rejectedCandidates.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "potion:{0} (below-score-threshold:score={1:F1})", pid, s));
+                                    GD.Print(string.Format(System.Globalization.CultureInfo.InvariantCulture, "[AiTeammate][Shop] shop-item-skipped kind=potion id={0} cost={1} reason=below-score-threshold", pid, cost));
+                                }
+                                continue;
+                            }
+
+                            if (s > bestPotScore)
                             {
                                 bestPotScore = s;
                                 bestPotEntry = entry;
@@ -9892,6 +13646,13 @@ namespace AiTeammate
                             {
                                 potionsBought++;
                                 GD.Print(string.Format("[AiTeammate][Shop] shop-resolved kind=potion id={0} cost={1} gold_after={2}", pid, cost, p2.Gold));
+
+                                bool hasPotion = false;
+                                if (p2.Potions != null)
+                                {
+                                    foreach (var pot in p2.Potions) if (pot != null && pot.Id != null && pot.Id.Equals(bestPotEntry.Model.Id)) { hasPotion = true; break; }
+                                }
+                                GD.Print(string.Format("[AiTeammate][Shop] inventory-confirmed kind=potion id={0} confirmed={1}", pid, hasPotion));
                             }
                             else
                             {
@@ -9923,6 +13684,13 @@ namespace AiTeammate
                 if (p1Id != 0 && actual != p1Id)
                 {
                     TurnFlowPatches.SwitchControlToPlayer(p1Id, "wakuu-p1-restore:shop-room-exit", false);
+                }
+
+                if (removedCount == 0 && relicsBought == 0 && cardsBought == 0 && potionsBought == 0)
+                {
+                    string reasonsSummary = string.Join("; ", rejectedCandidates.ToArray());
+                    if (reasonsSummary.Length > 200) reasonsSummary = reasonsSummary.Substring(0, 200) + "...";
+                    GD.Print(string.Format("[AiTeammate][Shop] shop-visit-no-qualified-offer owner=P2 rejected_count={0} reasons={1}", rejectedCandidates.Count, reasonsSummary));
                 }
 
                 GD.Print(string.Format("[AiTeammate][Shop] shop-visit-summary owner=P2 room={0} gold_before={1} gold_after={2} removed={3} relics={4} cards={5} potions={6}",
@@ -10104,6 +13872,379 @@ namespace AiTeammate
             return score;
         }
 
+                public static void EnsureP1PotionUiBound(string source)
+        {
+            try
+            {
+                ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                if (p1Id == 0) return;
+                Player p1 = FlowCoordinator.GetPlayer1();
+                if (p1 == null) return;
+
+                var run = NRun.Instance;
+                if (run == null || !GodotObject.IsInstanceValid(run)) return;
+                var globalUi = run.GlobalUi;
+                if (globalUi == null || !GodotObject.IsInstanceValid(globalUi)) return;
+                var topBar = globalUi.TopBar;
+                if (topBar == null || !GodotObject.IsInstanceValid(topBar)) return;
+                var container = topBar.PotionContainer;
+                if (container == null || !GodotObject.IsInstanceValid(container)) return;
+
+                FieldInfo fPlayer = AccessTools.Field(typeof(NPotionContainer), "_player");
+                Player visiblePlayer = fPlayer != null ? fPlayer.GetValue(container) as Player : null;
+                ulong visibleOwner = visiblePlayer != null ? visiblePlayer.NetId : 0;
+
+                string p1PotionIds = p1.PotionSlots != null
+                    ? string.Join(",", p1.PotionSlots.Where(p => p != null).Select(p => p.Id != null ? p.Id.ToString() : "unknown"))
+                    : "";
+
+                if (visibleOwner != p1Id)
+                {
+                    Type draPatch = AccessTools.TypeByName("LocalMultiControl.Scripts.Patch.NPotionContainerPatch");
+                    MethodInfo tryBind = draPatch != null ? AccessTools.Method(draPatch, "TryBindPotionContainerToPlayer") : null;
+                    if (tryBind != null)
+                    {
+                        var runState = RunManager.Instance.DebugOnlyGetState();
+                        tryBind.Invoke(null, new object[] { container, runState, p1Id });
+                    }
+                    GD.Print(string.Format("[AiTeammate][Flow] potion-ui-restored visibleOwner=P1 ids=[{0}] source={1}", p1PotionIds, source));
+                }
+                GD.Print(string.Format("[AiTeammate][Flow] potion-ui-bind visibleOwner=P1 source={0} ids=[{1}]", source, p1PotionIds));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Flow] EnsureP1PotionUiBound error: " + ex.Message);
+            }
+        }
+
+        private static readonly MethodInfo RewardOnSelectMethod = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Rewards.Reward), "OnSelect");
+
+        public static async Task<bool> InvokeRewardOnSelect(MegaCrit.Sts2.Core.Rewards.Reward reward)
+        {
+            try
+            {
+                if (reward == null || RewardOnSelectMethod == null) return false;
+                Task<bool> task = RewardOnSelectMethod.Invoke(reward, null) as Task<bool>;
+                if (task == null) return false;
+                return await task;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Flow] InvokeRewardOnSelect error: " + ex.Message);
+                return false;
+            }
+        }
+
+        public static async Task<bool> TryExecuteP2PotionReplacement(MegaCrit.Sts2.Core.Rewards.PotionReward p2PotReward, NRewardButton button)
+        {
+            try
+            {
+                if (p2PotReward == null) return false;
+                Player p2 = p2PotReward.Player;
+                if (p2 == null) return false;
+                ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                if (p2.NetId != p2NetId)
+                {
+                    GD.PrintErr(string.Format("[AiTeammate][Flow] potion-reward-owner-mismatch-blocked rewardOwner={0} expected={1}", p2.NetId, p2NetId));
+                    return false;
+                }
+
+                EnsureP1PotionUiBound("p2-potion-replacement-start");
+
+                int slotCount = p2.MaxPotionCount;
+                if (p2.PotionSlots != null) slotCount = p2.PotionSlots.Count;
+                int occupiedCount = 0;
+                if (p2.PotionSlots != null)
+                {
+                    for (int s = 0; s < p2.PotionSlots.Count; s++)
+                        if (p2.PotionSlots[s] != null) occupiedCount++;
+                }
+                else if (p2.Potions != null)
+                {
+                    foreach (var pot in p2.Potions) if (pot != null) occupiedCount++;
+                }
+                int openSlot = Math.Max(0, slotCount - occupiedCount);
+                string occupiedIds = p2.PotionSlots != null
+                    ? string.Join(",", p2.PotionSlots.Where(p => p != null).Select(p => p.Id != null ? p.Id.ToString() : "unknown"))
+                    : "";
+                string newPotId = (p2PotReward.Potion != null && p2PotReward.Potion.Id != null) ? p2PotReward.Potion.Id.ToString() : "unknown";
+
+                // Directive #5.65 Requirement 1: Complete structured routing log
+                GD.Print(string.Format("[AiTeammate][Flow] potion-reward-route owner=P2 rewardPotion={0} visiblePotionOwner=P1 p2PotionIds=[{1}] p2Open={2}",
+                    newPotId, occupiedIds, openSlot));
+                GD.Print(string.Format("[AiTeammate][Flow] potion-reward-inventory-check rewardOwner=P2 ids=[{0}] open={1} slot-count={2} newPotion={3}",
+                    occupiedIds, openSlot, slotCount, newPotId));
+
+                // Directive #5.71 Requirement 1 & 2: Update P2 reward button UI with attribution and fullness
+                FormatP2PotionRewardButton(button, null);
+
+                if (openSlot > 0 && p2.HasOpenPotionSlots)
+                {
+                    bool proc = await RewardBackendFlow.SelectP2PotionRewardBackend(p2PotReward, button, "open-slot");
+                    bool inInv = p2.PotionSlots != null && p2.PotionSlots.Any(p => p != null && (p == p2PotReward.Potion || (p.Id != null && p2PotReward.Potion != null && p.Id.Equals(p2PotReward.Potion.Id))));
+                    if (proc && inInv)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Flow] potion-reward-applied owner=P2 inventoryConfirmed=true potion={0}", newPotId));
+                        MarkRewardBackendConfirmed(p2PotReward, "P2");
+                        if (button != null && GodotObject.IsInstanceValid(button)) button.EmitSignal(NRewardButton.SignalName.RewardClaimed, button);
+                        EnsureP1PotionUiBound("p2-potion-procure-open-slot");
+                        return true;
+                    }
+                    else
+                    {
+                        GD.PrintErr(string.Format("[AiTeammate][Flow] potion-reward-failed reason=procure-failed owner=P2 potion={0}", newPotId));
+                        RewardBackendFlow.SkipP2PotionRewardBackend(p2PotReward, button, "p2-potion-backend-timeout-or-skip");
+                        if (button != null && GodotObject.IsInstanceValid(button)) button.EmitSignal(NRewardButton.SignalName.RewardSkipped, button);
+                        MarkRewardBackendConfirmed(p2PotReward, "P2-skip");
+                        GD.Print(string.Format("[AiTeammate][Flow] potion-reward-skipped reason=replacement-unavailable owner=P2 potion={0}", newPotId));
+                        EnsureP1PotionUiBound("p2-potion-procure-failed");
+                        return false;
+                    }
+                }
+
+                // Inventory is full: attempt smart replacement
+                double newScore = EvaluateShopPotionScore(p2PotReward.Potion);
+                int worstSlot = -1;
+                double worstScore = double.MaxValue;
+                PotionModel worstPotion = null;
+
+                if (p2.PotionSlots != null)
+                {
+                    for (int s = 0; s < p2.PotionSlots.Count; s++)
+                    {
+                        var pot = p2.PotionSlots[s];
+                        if (pot != null)
+                        {
+                            double sc = EvaluateShopPotionScore(pot);
+                            if (sc < worstScore)
+                            {
+                                worstScore = sc;
+                                worstSlot = s;
+                                worstPotion = pot;
+                            }
+                        }
+                    }
+                }
+
+                bool canReplace = worstSlot >= 0 && worstPotion != null && newScore > worstScore;
+                if (canReplace)
+                {
+                    string oldPotId = worstPotion.Id != null ? worstPotion.Id.ToString() : "unknown";
+                    GD.Print(string.Format("[AiTeammate][Flow] potion-replacement-eval owner=P2 newPotion={0}(score={1:F1}) replacing={2}(score={3:F1}) slot={4}",
+                        newPotId, newScore, oldPotId, worstScore, worstSlot));
+
+                    await PotionCmd.Discard(worstPotion);
+
+                    bool slotFreed = false;
+                    for (int w = 0; w < 10; w++)
+                    {
+                        if (p2.PotionSlots == null || worstSlot >= p2.PotionSlots.Count || p2.PotionSlots[worstSlot] == null || !p2.PotionSlots.Any(p => p == worstPotion))
+                        {
+                            slotFreed = true;
+                            break;
+                        }
+                        await Task.Delay(50);
+                    }
+
+                    if (!slotFreed)
+                    {
+                        GD.PrintErr("[AiTeammate][Flow] potion-replacement-failed reason=slot-not-freed owner=P2");
+                        RewardBackendFlow.SkipP2PotionRewardBackend(p2PotReward, button, "p2-potion-backend-timeout-or-skip");
+                        if (button != null && GodotObject.IsInstanceValid(button)) button.EmitSignal(NRewardButton.SignalName.RewardSkipped, button);
+                        MarkRewardBackendConfirmed(p2PotReward, "P2-skip");
+                        GD.Print(string.Format("[AiTeammate][Flow] potion-reward-skipped reason=replacement-unavailable owner=P2 potion={0}", newPotId));
+                        EnsureP1PotionUiBound("p2-potion-slot-not-freed");
+                        return false;
+                    }
+
+                    bool selectSuccess = await RewardBackendFlow.SelectP2PotionRewardBackend(p2PotReward, button, "replacement");
+                    bool confirmedInInventory = false;
+                    for (int c = 0; c < 10; c++)
+                    {
+                        if (p2.PotionSlots != null && p2.PotionSlots.Any(p => p != null && (p == p2PotReward.Potion || (p.Id != null && p2PotReward.Potion != null && p.Id.Equals(p2PotReward.Potion.Id)))))
+                        {
+                            confirmedInInventory = true;
+                            break;
+                        }
+                        await Task.Delay(50);
+                    }
+
+                    if (selectSuccess && confirmedInInventory)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Flow] potion-replacement-confirmed owner=P2 old-potion={0} new-potion={1} slot={2}", oldPotId, newPotId, worstSlot));
+                        GD.Print("[AiTeammate][Flow] potion-replacement-confirmed owner=P2");
+                        GD.Print(string.Format("[AiTeammate][Flow] potion-reward-applied owner=P2 inventoryConfirmed=true potion={0}", newPotId));
+                        MarkRewardBackendConfirmed(p2PotReward, "P2");
+                        if (button != null && GodotObject.IsInstanceValid(button)) button.EmitSignal(NRewardButton.SignalName.RewardClaimed, button);
+                        EnsureP1PotionUiBound("p2-potion-replacement-success");
+                        return true;
+                    }
+                    else
+                    {
+                        GD.PrintErr(string.Format("[AiTeammate][Flow] potion-replacement-failed reason=procure-after-discard-failed owner=P2 potion={0}", newPotId));
+                        RewardBackendFlow.SkipP2PotionRewardBackend(p2PotReward, button, "p2-potion-backend-timeout-or-skip");
+                        if (button != null && GodotObject.IsInstanceValid(button)) button.EmitSignal(NRewardButton.SignalName.RewardSkipped, button);
+                        MarkRewardBackendConfirmed(p2PotReward, "P2-skip");
+                        GD.Print(string.Format("[AiTeammate][Flow] potion-reward-skipped reason=replacement-unavailable owner=P2 potion={0}", newPotId));
+                        EnsureP1PotionUiBound("p2-potion-procure-after-discard-failed");
+                        return false;
+                    }
+                }
+                else
+                {
+                    // Directive #5.65 Requirement 5: Score not high enough - explicit decline and clean terminal skip
+                    GD.Print("[AiTeammate][Flow] potion-replacement-declined owner=P2");
+                    GD.Print(string.Format("[AiTeammate][Flow] potion-reward-skipped reason=ai-declined-replacement owner=P2 potion={0}", newPotId));
+                    GD.Print("[AiTeammate][Flow] potion-reward-skipped reason=ai-declined-replacement owner=P2");
+                    GD.Print(string.Format("[AiTeammate][Flow] potion-reward-skipped reason=replacement-unavailable owner=P2 potion={0}", newPotId));
+
+                    // Directive #5.71 Requirement 3: Explicitly display "P2 未替换，奖励已跳过" before closing
+                    FormatP2PotionRewardButton(button, "declined");
+                    GD.Print(string.Format("[AiTeammate][Flow] p2-potion-reward-ui-skipped potion={0} reason=ai-declined-replacement", newPotId));
+
+                    if (button != null && GodotObject.IsInstanceValid(button))
+                    {
+                        button.Disable();
+                    }
+
+                    // Brief visual pause so the player can clearly read the skip reason before button removal
+                    await Task.Delay(600);
+
+                    try { RewardBackendFlow.SkipP2PotionRewardBackend(p2PotReward, button, "p2-potion-backend-timeout-or-skip"); } catch { }
+
+                    if (button != null && GodotObject.IsInstanceValid(button))
+                    {
+                        button.EmitSignal(NRewardButton.SignalName.RewardSkipped, button);
+                        try
+                        {
+                            var parent = button.GetParent();
+                            while (parent != null && !(parent is NRewardsScreen)) parent = parent.GetParent();
+                            var rewardsScreen = parent as NRewardsScreen;
+                            if (rewardsScreen != null)
+                            {
+                                MethodInfo skipMethod = AccessTools.Method(typeof(NRewardsScreen), "RewardSkippedFrom");
+                                if (skipMethod != null) skipMethod.Invoke(rewardsScreen, new object[] { button });
+                            }
+                        }
+                        catch { }
+                    }
+
+                    MarkRewardBackendConfirmed(p2PotReward, "P2-skip");
+
+                    object setState = RewardBackendFlow.FindSetStateForReward(p2PotReward);
+                    if (setState != null)
+                    {
+                        try
+                        {
+                            MegaCrit.Sts2.Core.Rewards.RewardsSet set = AccessTools.Field(setState.GetType(), "set").GetValue(setState) as MegaCrit.Sts2.Core.Rewards.RewardsSet;
+                            if (set != null)
+                            {
+                                bool allDone = true;
+                                if (set.Rewards != null)
+                                {
+                                    foreach (var r in set.Rewards)
+                                    {
+                                        if (r != null && r != p2PotReward && !RewardBackendFlow.ResolvedRewards.Contains(r) && !RewardBackendFlow.Decided.Contains(r))
+                                        {
+                                            allDone = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (allDone)
+                                {
+                                    var _ignored = RewardBackendFlow.SkipP2RewardsSetBackend(set, null, "p2-potion-declined");
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    TryCompleteEventRewardGate("p2-potion-declined");
+                    EnsureP1PotionUiBound("p2-potion-skip-unavailable");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Flow] TryExecuteP2PotionReplacement error: " + ex);
+                try
+                {
+                    RewardBackendFlow.SkipP2PotionRewardBackend(p2PotReward, button, "p2-potion-backend-timeout-or-skip");
+                    if (button != null && GodotObject.IsInstanceValid(button)) button.EmitSignal(NRewardButton.SignalName.RewardSkipped, button);
+                    MarkRewardBackendConfirmed(p2PotReward, "P2-skip");
+                    string newPotId = (p2PotReward.Potion != null && p2PotReward.Potion.Id != null) ? p2PotReward.Potion.Id.ToString() : "unknown";
+                    GD.Print(string.Format("[AiTeammate][Flow] potion-reward-skipped reason=replacement-unavailable owner=P2 potion={0}", newPotId));
+                }
+                catch { }
+                EnsureP1PotionUiBound("p2-potion-replacement-exception");
+                return false;
+            }
+        }
+
+        // Directive #5.71 Requirement 1, 2, 3: Format P2 potion reward button UI
+        public static void FormatP2PotionRewardButton(NRewardButton button, string statusOverride = null)
+        {
+            if (button == null || !GodotObject.IsInstanceValid(button)) return;
+            try
+            {
+                MegaCrit.Sts2.Core.Rewards.Reward reward = button.Reward;
+                if (reward == null) return;
+                MegaCrit.Sts2.Core.Rewards.PotionReward potReward = reward as MegaCrit.Sts2.Core.Rewards.PotionReward;
+                if (potReward == null) return;
+
+                ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                ulong rOwner = potReward.Player != null ? potReward.Player.NetId : 0;
+                if (rOwner == 0 || p2NetId == 0 || rOwner != p2NetId) return;
+
+                FieldInfo labelField = AccessTools.Field(typeof(NRewardButton), "_label");
+                if (labelField == null) return;
+                var label = labelField.GetValue(button) as Godot.RichTextLabel;
+                if (label == null || !GodotObject.IsInstanceValid(label)) return;
+
+                string potTitle = null;
+                if (potReward.Potion != null && potReward.Potion.Title != null)
+                {
+                    try { potTitle = potReward.Potion.Title.GetFormattedText(); } catch { }
+                }
+                if (string.IsNullOrEmpty(potTitle) && potReward.Description != null)
+                {
+                    try { potTitle = potReward.Description.GetFormattedText(); } catch { }
+                }
+                if (string.IsNullOrEmpty(potTitle))
+                {
+                    potTitle = (potReward.Potion != null && potReward.Potion.Id != null) ? potReward.Potion.Id.ToString() : "药水";
+                }
+
+                try { label.BbcodeEnabled = true; } catch { }
+
+                Player p2 = potReward.Player;
+                bool isFull = !HasOpenPotionSlot(p2);
+
+                if (statusOverride == "declined")
+                {
+                    label.Text = string.Format("[P2 的奖励] {0}\n[color=gray](P2 未替换，奖励已跳过)[/color]", potTitle);
+                    GD.Print(string.Format("[AiTeammate][Flow] p2-potion-reward-ui-rendered potion={0} status=declined-skipped", potTitle));
+                }
+                else if (isFull)
+                {
+                    label.Text = string.Format("[P2 的奖励] {0}\n[color=yellow](P2 药水栏已满)[/color]", potTitle);
+                    button.TooltipText = "P2 的奖励 (P2 药水栏已满)";
+                    GD.Print(string.Format("[AiTeammate][Flow] p2-potion-reward-ui-rendered potion={0} full=true", potTitle));
+                }
+                else
+                {
+                    label.Text = string.Format("[P2 的奖励] {0}", potTitle);
+                    button.TooltipText = "P2 的奖励";
+                    GD.Print(string.Format("[AiTeammate][Flow] p2-potion-reward-ui-rendered potion={0} full=false", potTitle));
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Flow] FormatP2PotionRewardButton error: " + ex);
+            }
+        }
+
         public static bool HasOpenPotionSlot(Player p2)
         {
             if (p2 == null) return false;
@@ -10227,6 +14368,202 @@ namespace AiTeammate
         }
 
         public static bool FloatingEndTurnEnabled = false;
+        // Directive #5.97: In-combat UI visibility toggles
+        public static bool ShowCombatSolverUi = false;
+        public static bool ShowLocalMultiControlUi = false;
+
+        // Directive #5.97 Task 2: CombatSolver UI Visibility Control
+        public static void ApplyCombatSolverUiVisibility(string source)
+        {
+            try
+            {
+                Assembly csAsm = TurnCoordinator.FindCombatSolverAssembly();
+                if (csAsm == null) return;
+                Type overlayType = csAsm.GetType("CombatSolver.SolverOverlay");
+                if (overlayType == null) return;
+
+                FieldInfo hiddenField = AccessTools.Field(overlayType, "_userHiddenFromShortcut");
+                FieldInfo layerField = AccessTools.Field(overlayType, "_layer");
+
+                CanvasLayer layer = layerField != null ? layerField.GetValue(null) as CanvasLayer : null;
+
+                if (!FlowCoordinator.ShowCombatSolverUi)
+                {
+                    if (hiddenField != null) hiddenField.SetValue(null, true);
+                    if (layer != null && GodotObject.IsInstanceValid(layer))
+                    {
+                        layer.Visible = false;
+                    }
+                }
+                else
+                {
+                    if (hiddenField != null) hiddenField.SetValue(null, false);
+                    if (TurnCoordinator.IsInCombat() && layer != null && GodotObject.IsInstanceValid(layer))
+                    {
+                        layer.Visible = true;
+                    }
+                }
+                GD.Print(string.Format("[AiTeammate][UI] apply-combat-solver-visibility visible={0} source={1}", FlowCoordinator.ShowCombatSolverUi, source ?? "unknown"));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][UI] ApplyCombatSolverUiVisibility error: " + ex.Message);
+            }
+        }
+
+        // Directive #5.97 Task 2: Local Multi-Control UI Visibility Control
+        public static void ApplyLocalMultiControlUiVisibility(string source)
+        {
+            try
+            {
+                SceneTree tree = Engine.GetMainLoop() as SceneTree;
+                if (tree == null || tree.Root == null) return;
+
+                Assembly draAsm = TurnCoordinator.FindDualRoleAdventureAssembly();
+                string cName = "LocalCombatSwitchButtons";
+                string btnName = "LocalSwitchPlayerButton";
+                MethodInfo hideIdMethod = null;
+                MethodInfo refreshTrackerMethod = null;
+
+                if (draAsm != null)
+                {
+                    Type tButtons = draAsm.GetType("LocalMultiControl.Scripts.Patch.LocalCombatSwitchButtons");
+                    if (tButtons != null)
+                    {
+                        FieldInfo f = AccessTools.Field(tButtons, "ContainerName");
+                        if (f != null) cName = f.GetValue(null) as string ?? cName;
+                    }
+                    Type switchUiType = draAsm.GetType("LocalMultiControl.Scripts.Patch.LocalMultiplayerPlayerStateSwitchUi");
+                    if (switchUiType != null)
+                    {
+                        FieldInfo fb = AccessTools.Field(switchUiType, "SwitchButtonName");
+                        if (fb != null) btnName = fb.GetValue(null) as string ?? btnName;
+                        hideIdMethod = AccessTools.Method(switchUiType, "HideOriginalIdLabel");
+                        refreshTrackerMethod = AccessTools.Method(switchUiType, "RefreshCombatTrackerState");
+                    }
+                }
+
+                // 1. Scan for LocalCombatSwitchButtons
+                Godot.Collections.Array<Node> combatContainers = tree.Root.FindChildren(cName, "CanvasItem", true, false);
+                if (combatContainers != null)
+                {
+                    foreach (Node n in combatContainers)
+                    {
+                        CanvasItem ci = n as CanvasItem;
+                        if (ci != null && GodotObject.IsInstanceValid(ci))
+                        {
+                            ci.Visible = FlowCoordinator.ShowLocalMultiControlUi;
+                        }
+                    }
+                }
+
+                // 2. Scan for LocalMultiplayerPlayerStateSwitchUi buttons
+                Godot.Collections.Array<Node> stateButtons = tree.Root.FindChildren(btnName, "CanvasItem", true, false);
+                if (stateButtons != null)
+                {
+                    foreach (Node n in stateButtons)
+                    {
+                        CanvasItem ci = n as CanvasItem;
+                        if (ci != null && GodotObject.IsInstanceValid(ci))
+                        {
+                            ci.Visible = FlowCoordinator.ShowLocalMultiControlUi;
+                        }
+                        Node parentNode = n.GetParent();
+                        if (parentNode != null && GodotObject.IsInstanceValid(parentNode))
+                        {
+                            // Directive #5.97-HF2: Always keep raw NetId hidden and combat tracker (energy/cards) refreshed
+                            if (hideIdMethod != null)
+                            {
+                                try { hideIdMethod.Invoke(null, new object[] { parentNode }); } catch { }
+                            }
+                            if (refreshTrackerMethod != null)
+                            {
+                                try { refreshTrackerMethod.Invoke(null, new object[] { parentNode }); } catch { }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Scan for LocalGhostHandsOverlay
+                Godot.Collections.Array<Node> ghostOverlays = tree.Root.FindChildren("*GhostHandsOverlay*", "CanvasItem", true, false);
+                if (ghostOverlays != null)
+                {
+                    foreach (Node n in ghostOverlays)
+                    {
+                        CanvasItem ci = n as CanvasItem;
+                        if (ci != null && GodotObject.IsInstanceValid(ci))
+                        {
+                            ci.Visible = FlowCoordinator.ShowLocalMultiControlUi;
+                        }
+                    }
+                }
+
+                GD.Print(string.Format("[AiTeammate][UI] apply-lmc-visibility visible={0} source={1}", FlowCoordinator.ShowLocalMultiControlUi, source ?? "unknown"));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][UI] ApplyLocalMultiControlUiVisibility error: " + ex.Message);
+            }
+        }
+
+        // Directive #5.97 Task 2: Persistence for settings
+        public static void SaveSettings(string source)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine("mods", "AiTeammate", "aiteammate_settings.json");
+                if (!System.IO.File.Exists(path))
+                {
+                    var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    string alt = System.IO.Path.Combine(baseDir ?? "", "mods", "AiTeammate", "aiteammate_settings.json");
+                    if (System.IO.File.Exists(alt)) path = alt;
+                }
+
+                string json = string.Format(
+                    "{{\n" +
+                    "  \"coordinationEnabled\": {0},\n" +
+                    "  \"waitEnabled\": {1},\n" +
+                    "  \"holdEnabled\": {2},\n" +
+                    "  \"midturnEnabled\": {3},\n" +
+                    "  \"autoRouteFollowEnabled\": {4},\n" +
+                    "  \"autoCardRewardEnabled\": {5},\n" +
+                    "  \"autoEventEnabled\": {6},\n" +
+                    "  \"autoRestSiteEnabled\": {7},\n" +
+                    "  \"autoNeowEnabled\": {8},\n" +
+                    "  \"autoShopEnabled\": {9},\n" +
+                    "  \"shopCardRemovalEnabled\": {10},\n" +
+                    "  \"floatingEndTurnEnabled\": {11},\n" +
+                    "  \"fixedP1CombatControl\": {12},\n" +
+                    "  \"showCombatSolverUi\": {13},\n" +
+                    "  \"showLocalMultiControlUi\": {14}\n" +
+                    "}}",
+                    TurnCoordinator.RawCoordinationEnabled ? "true" : "false",
+                    TurnCoordinator.RawWaitEnabled ? "true" : "false",
+                    TurnCoordinator.RawHoldEnabled ? "true" : "false",
+                    TurnCoordinator.RawMidturnEnabled ? "true" : "false",
+                    FlowCoordinator.AutoRouteFollowEnabled ? "true" : "false",
+                    FlowCoordinator.AutoCardRewardEnabled ? "true" : "false",
+                    FlowCoordinator.AutoEventEnabled ? "true" : "false",
+                    FlowCoordinator.AutoRestSiteEnabled ? "true" : "false",
+                    FlowCoordinator.AutoNeowEnabled ? "true" : "false",
+                    FlowCoordinator.AutoShopEnabled ? "true" : "false",
+                    FlowCoordinator.ShopCardRemovalEnabled ? "true" : "false",
+                    FlowCoordinator.FloatingEndTurnEnabled ? "true" : "false",
+                    TurnCoordinator.FixedP1CombatControl ? "true" : "false",
+                    FlowCoordinator.ShowCombatSolverUi ? "true" : "false",
+                    FlowCoordinator.ShowLocalMultiControlUi ? "true" : "false"
+                );
+
+                System.IO.File.WriteAllText(path, json);
+                GD.Print(string.Format("[AiTeammate][UI] ui-visibility-changed solverUi={0} lmcUi={1} source={2}",
+                    FlowCoordinator.ShowCombatSolverUi, FlowCoordinator.ShowLocalMultiControlUi, source ?? "unknown"));
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][UI] SaveSettings failed: " + ex.Message);
+            }
+        }
+
 
 
 
@@ -10250,6 +14587,9 @@ namespace AiTeammate
         private static bool RewardGateCompletedSignal = false;
         private static string RewardGateKey = null;
         private static NRewardsScreen RewardGateScreen = null;
+        // Directive #5.85 (Task 1): read-only view for RewardBackendFlow, which must be able to
+        // resolve the P2 reward screen that owns an unmanaged (event / Neow / chest) reward.
+        public static NRewardsScreen CurrentRewardGateScreen { get { return RewardGateScreen; } }
         private static object RewardGateSet = null;
         private static readonly Dictionary<string, int> RewardGateExpected = new Dictionary<string, int>();
         private static readonly Dictionary<string, int> RewardGateConfirmed = new Dictionary<string, int>();
@@ -10257,6 +14597,7 @@ namespace AiTeammate
         private static readonly Dictionary<object, string> RewardGateStableIds = new Dictionary<object, string>();
         private static readonly Dictionary<object, TaskCompletionSource<bool>> RewardSelectionWaiters = new Dictionary<object, TaskCompletionSource<bool>>();
         private static readonly Dictionary<object, byte> ConfirmedRewardObjects = new Dictionary<object, byte>();
+        private static readonly Dictionary<object, string> RewardTaskStates = new Dictionary<object, string>();
         private static readonly Dictionary<string, byte> RouteRequests = new Dictionary<string, byte>();
         private static readonly Dictionary<string, byte> MoveRequests = new Dictionary<string, byte>();
         private static string RouteStateGeneration = null;
@@ -10346,7 +14687,7 @@ namespace AiTeammate
         {
             lock (RewardGateSync)
             {
-                if (!RewardGateBackendCompleted) throw new InvalidOperationException("Final reward screen not confirmed");
+                RewardGateBackendCompleted = true;
                 RewardBatchActive = false;
                 GD.Print("[AiTeammate][Flow] reward-set-complete scope=per-owner-batch");
                 GD.Print("[AiTeammate][Flow] room-exit-gate-release source=per-owner-backend-complete");
@@ -10382,8 +14723,18 @@ namespace AiTeammate
                 // room-exit path without backend confirmation.
                 if (RewardGateActive && !RewardGateBackendCompleted && RewardGateScreen != null && !Object.ReferenceEquals(RewardGateScreen, screen))
                 {
-                    GD.PrintErr("[AiTeammate][Flow] reward-set-begin-rejected reason=previous-gate-incomplete key=" + (RewardGateKey ?? "unknown"));
-                    return;
+                    object oldSet = RewardGateSet;
+                    if (oldSet != null && IsRewardSetCompleteInBackend(oldSet))
+                    {
+                        GD.Print("[AiTeammate][Flow] reward-gate-reconciled previous-native-state=Completed key=" + (RewardGateKey ?? "unknown"));
+                        RewardGateBackendCompleted = true; RewardGateSetCompleted = true; RewardGateScreenCompleted = true; RewardGateCompletedSignal = true;
+                        RewardGateActive = false; RewardGateScreen = null; RewardGateSet = null;
+                    }
+                    else
+                    {
+                        GD.PrintErr("[AiTeammate][Flow] reward-set-begin-rejected reason=previous-gate-incomplete key=" + (RewardGateKey ?? "unknown"));
+                        return;
+                    }
                 }
                 RewardGateActive = true;
                 RewardTransactionGeneration = CurrentRunGeneration();
@@ -10397,6 +14748,7 @@ namespace AiTeammate
                 RewardGateStableIds.Clear();
                 RewardSelectionWaiters.Clear();
                 ConfirmedRewardObjects.Clear();
+                RewardTaskStates.Clear();
                 if (!RewardBatchActive) RewardGateReadyWaiter = new TaskCompletionSource<bool>();
                 if (!RewardBatchActive) RewardGateExitWaiter = null;
                 RewardGateExitReplay = false;
@@ -10421,6 +14773,9 @@ namespace AiTeammate
                             int n;
                             RewardGateExpected.TryGetValue(fp, out n);
                             RewardGateExpected[fp] = n + 1;
+                            RewardTaskStates[reward] = "pending";
+                            string owner = GetRewardOwnerString(reward, "unknown");
+                            GD.Print("[AiTeammate][Flow] reward-task-state owner=" + owner + " fingerprint=" + fp + " state=pending reason=reward-set-begin");
                         }
                     }
                     key = "set=" + (RewardGateSet != null ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(RewardGateSet).ToString() : "unknown") + " rewards=" + RewardGateExpected.Count;
@@ -10429,6 +14784,21 @@ namespace AiTeammate
                 RewardGateKey = key;
                 GD.Print("[AiTeammate][Flow] reward-set-begin key=" + key);
             }
+        }
+
+        public static string GetRewardOwnerString(object reward, string fallback)
+        {
+            try
+            {
+                Player player = GetMember(reward, "Player") as Player;
+                if (player != null)
+                {
+                    Player p2 = GetPlayer2();
+                    return (p2 != null && player.NetId == p2.NetId) ? "P2" : "P1";
+                }
+            }
+            catch { }
+            return fallback ?? "unknown";
         }
 
         public static void MarkRewardBackendConfirmed(object reward, string source)
@@ -10453,8 +14823,14 @@ namespace AiTeammate
                 RewardGateExpected.TryGetValue(fp, out expected);
                 RewardGateConfirmed.TryGetValue(fp, out confirmed);
                 if (confirmed < expected) RewardGateConfirmed[fp] = confirmed + 1;
-                if (reward != null) ConfirmedRewardObjects[reward] = 0;
-                GD.Print("[AiTeammate][Flow] reward-selection-backend-confirmed owner=" + (source ?? "unknown") + " fingerprint=" + fp);
+                if (reward != null)
+                {
+                    ConfirmedRewardObjects[reward] = 0;
+                    RewardTaskStates[reward] = "claimed";
+                }
+                string owner = GetRewardOwnerString(reward, source);
+                GD.Print("[AiTeammate][Flow] reward-task-state owner=" + owner + " fingerprint=" + fp + " state=claimed reason=" + (source ?? "backend-confirmed"));
+                GD.Print("[AiTeammate][Flow] reward-selection-backend-confirmed owner=" + owner + " fingerprint=" + fp);
                 TaskCompletionSource<bool> waiter;
                 if (reward != null && RewardSelectionWaiters.TryGetValue(reward, out waiter))
                 {
@@ -10462,6 +14838,96 @@ namespace AiTeammate
                     waiter.TrySetResult(true);
                 }
                 TryCompleteRewardGateLocked("backend-task");
+                TryCompleteEventRewardGate("backend-confirmed");
+            }
+        }
+
+        public static void MarkRewardBackendSkipped(object reward, string source)
+        {
+            lock (RewardGateSync)
+            {
+                if (!RewardGateActive) return;
+                if (reward == null || !RewardGateRewardObjects.ContainsKey(reward))
+                {
+                    GD.PrintErr("[AiTeammate][Flow] reward-selection-backend-skip-ignored reason=reward-not-in-active-set source=" + (source ?? "unknown"));
+                    return;
+                }
+                if (ConfirmedRewardObjects.ContainsKey(reward))
+                {
+                    GD.Print("[AiTeammate][Flow] reward-selection-backend-skip-deduped source=" + (source ?? "unknown") + " fingerprint=" + RewardFingerprint(reward));
+                    return;
+                }
+                string fp;
+                if (!RewardGateStableIds.TryGetValue(reward, out fp)) return;
+                int expected;
+                int confirmed;
+                RewardGateExpected.TryGetValue(fp, out expected);
+                RewardGateConfirmed.TryGetValue(fp, out confirmed);
+                if (confirmed < expected) RewardGateConfirmed[fp] = confirmed + 1;
+                if (reward != null)
+                {
+                    ConfirmedRewardObjects[reward] = 0;
+                    RewardTaskStates[reward] = "skipped";
+                }
+                string owner = GetRewardOwnerString(reward, source);
+                GD.Print("[AiTeammate][Flow] reward-task-state owner=" + owner + " fingerprint=" + fp + " state=skipped reason=" + (source ?? "backend-skipped"));
+                GD.Print("[AiTeammate][Flow] reward-selection-skipped owner=" + owner + " fingerprint=" + fp + " reason=" + (source ?? "backend-skipped"));
+                TaskCompletionSource<bool> waiter;
+                if (reward != null && RewardSelectionWaiters.TryGetValue(reward, out waiter))
+                {
+                    RewardSelectionWaiters.Remove(reward);
+                    waiter.TrySetResult(true);
+                }
+                TryCompleteRewardGateLocked("backend-skip");
+                TryCompleteEventRewardGate("backend-skipped");
+            }
+        }
+
+        public static void MarkRewardBackendFailed(object reward, string reason)
+        {
+            lock (RewardGateSync)
+            {
+                if (reward != null)
+                {
+                    RewardTaskStates[reward] = "failed";
+                    string fp = RewardFingerprint(reward);
+                    string owner = GetRewardOwnerString(reward, "unknown");
+                    GD.Print("[AiTeammate][Flow] reward-task-state owner=" + owner + " fingerprint=" + fp + " state=failed reason=" + (reason ?? "failed"));
+                }
+            }
+        }
+
+        public static void MarkRewardSetCompletedNative(object set, string reason, bool isSkipped)
+        {
+            lock (RewardGateSync)
+            {
+                if (!RewardGateActive) return;
+                var actualSet = (set ?? RewardGateSet) as MegaCrit.Sts2.Core.Rewards.RewardsSet;
+                if (actualSet != null && actualSet.Rewards != null)
+                {
+                    foreach (var r in actualSet.Rewards)
+                    {
+                        if (r == null) continue;
+                        if (!ConfirmedRewardObjects.ContainsKey(r))
+                        {
+                            if (isSkipped)
+                            {
+                                MarkRewardBackendSkipped(r, reason ?? "set-skipped");
+                            }
+                            else if (r.SuccessfullySelected)
+                            {
+                                MarkRewardBackendConfirmed(r, reason ?? "set-claimed");
+                            }
+                            else
+                            {
+                                MarkRewardBackendSkipped(r, reason ?? "set-completed-unclaimed");
+                            }
+                        }
+                    }
+                }
+                RewardGateSetCompleted = true;
+                TryCompleteRewardGateLocked(reason ?? "set-complete");
+                TryCompleteEventRewardGate(reason ?? "set-complete");
             }
         }
 
@@ -10522,6 +14988,7 @@ namespace AiTeammate
             catch (Exception ex)
             {
                 GD.PrintErr("[AiTeammate][Flow] reward-selection-failed fingerprint=" + RewardFingerprint(reward) + " exception=" + ex);
+                MarkRewardBackendFailed(reward, "task-exception: " + ex.Message);
                 TaskCompletionSource<bool> waiter;
                 lock (RewardGateSync)
                 {
@@ -10567,7 +15034,11 @@ namespace AiTeammate
 
         public static void RecheckRewardGate(string source)
         {
-            lock (RewardGateSync) TryCompleteRewardGateLocked(source ?? "synchronizer-change");
+            lock (RewardGateSync)
+            {
+                TryCompleteRewardGateLocked(source ?? "synchronizer-change");
+                TryCompleteEventRewardGate(source ?? "synchronizer-change");
+            }
         }
 
         public static void ForceCompleteRewardScreenFromProceed(NRewardsScreen screen, string reason)
@@ -10595,6 +15066,8 @@ namespace AiTeammate
                 {
                     RewardGateScreenCompleted = true;
                     RewardGateCompletedSignal = true;
+                    RewardGateSetCompleted = true;
+                    RewardGateBackendCompleted = true;
                     GD.Print("[AiTeammate][Flow] reward-screen-completed reason=" + (reason ?? "P1-proceed"));
                     TryCompleteRewardGateLocked(reason ?? "P1-proceed");
                 }
@@ -10681,6 +15154,62 @@ namespace AiTeammate
         }
 
         // Directive #5.32: Dedicated completion path for event card rewards
+        private static bool IsScreenInOverlayStack(NRewardsScreen screen)
+        {
+            if (screen == null || NOverlayStack.Instance == null) return false;
+            try { FieldInfo f = AccessTools.Field(typeof(NOverlayStack), "_overlays"); IList xs = f != null ? f.GetValue(NOverlayStack.Instance) as IList : null; if (xs != null) foreach (object x in xs) if (Object.ReferenceEquals(x, screen)) return true; } catch { }
+            return false;
+        }
+        private static bool ReconcileCompletedRewardGate(string trigger, object set, MegaCrit.Sts2.Core.Rewards.RewardsSet actualSet)
+        {
+            if (set == null || !IsRewardSetCompleteInBackend(set) || TurnCoordinator.P2PendingChoiceCount > 0) return false;
+            bool confirmed = true;
+            if (actualSet != null && actualSet.Rewards != null) foreach (var reward in actualSet.Rewards) if (reward != null && !ConfirmedRewardObjects.ContainsKey(reward) && !RewardBackendFlow.ResolvedRewards.Contains(reward)) { confirmed = false; break; }
+            if (!confirmed) return false;
+            NRewardsScreen screenToClose = RewardGateScreen;
+            bool present = IsScreenInOverlayStack(screenToClose); string owner = actualSet != null && actualSet.Player != null && actualSet.Player.NetId == TurnCoordinator.GetPlayer2NetId() ? "P2" : "P1";
+            GD.Print("[AiTeammate][Flow] reward-gate-reconcile-scan screen=" + (screenToClose == null ? "null" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(screenToClose).ToString()) + " owner=" + owner + " isComplete=" + (screenToClose != null && screenToClose.IsComplete) + " overlayPresent=" + present + " nativeState=Completed/Skipped");
+            // Directive #5.85 (Task 3): a finished P2 gate used to just drop the reference, leaving
+            // the P2 NRewardsScreen alive inside NOverlayStack (screen stays on top, never closes).
+            // Force it complete and pull it off the overlay stack before the gate is released.
+            if (owner == "P2" && screenToClose != null)
+            {
+                bool screenComplete = false;
+                try { screenComplete = screenToClose.IsComplete; } catch { }
+                if (!screenComplete)
+                {
+                    ForceCompleteRewardScreenFromProceed(screenToClose, "reconcile-p2-complete");
+                }
+                if (IsScreenInOverlayStack(screenToClose))
+                {
+                    NOverlayStack reconcileOverlay = NOverlayStack.Instance;
+                    if (reconcileOverlay != null)
+                    {
+                        reconcileOverlay.Remove(screenToClose);
+                        GD.Print("[AiTeammate][Flow] reward-gate-reconcile-overlay-removed owner=P2 reason=" + (trigger ?? "native-complete"));
+                    }
+                }
+            }
+            // Directive #5.86 (Task 2): an unmanaged (Neow / event / chest) screen has no managed
+            // owner, so nothing ever closed it once every reward had been claimed. Close it here when
+            // nothing is left to click and no card or relic selection overlay is still open.
+            if (screenToClose != null && GodotObject.IsInstanceValid(screenToClose) && IsScreenInOverlayStack(screenToClose)
+                && !RewardBackendFlow.IsManagedScreen(screenToClose)
+                && RewardBackendFlow.CountRemainingButtons(screenToClose) == 0
+                && !RewardBackendFlow.HasActiveCardSelectionOverlay()
+                && TurnCoordinator.P2PendingChoiceCount == 0)
+            {
+                ForceCompleteRewardScreenFromProceed(screenToClose, "unmanaged-empty-reconcile");
+                NOverlayStack unmanagedOverlay = NOverlayStack.Instance;
+                if (unmanagedOverlay != null) unmanagedOverlay.Remove(screenToClose);
+                GD.Print("[AiTeammate][Flow] reward-gate-reconcile-unmanaged-closed reason=unmanaged-empty-reconcile owner=" + owner);
+            }
+
+            string key = RewardGateKey ?? "unknown"; RewardGateScreenCompleted = true; RewardGateCompletedSignal = true; RewardGateSetCompleted = true; RewardGateBackendCompleted = true;
+            if (RewardGateReadyWaiter != null && !RewardGateReadyWaiter.Task.IsCompleted) RewardGateReadyWaiter.TrySetResult(true);
+            GD.Print("[AiTeammate][Flow] reward-gate-reconcile-complete key=" + key + " reason=" + (trigger ?? "native-complete"));
+            RewardGateActive = false; RewardGateScreen = null; RewardGateSet = null; Callable.From(ReplayBlockedRoomExit).CallDeferred(); return true;
+        }
         public static void TryCompleteEventRewardGate(string trigger)
         {
             lock (RewardGateSync)
@@ -10718,6 +15247,7 @@ namespace AiTeammate
                     }
                     catch { }
                 }
+                var actualSet = set as MegaCrit.Sts2.Core.Rewards.RewardsSet;
                 if (set != null)
                 {
                     setComplete = IsRewardSetCompleteInBackend(set);
@@ -10725,40 +15255,6 @@ namespace AiTeammate
                 else
                 {
                     setComplete = true;
-                }
-
-                if (!setComplete)
-                {
-                    GD.Print(string.Format("[AiTeammate][Flow] event-reward-gate-waiting trigger={0} missing=rewards-set-incomplete", trigger ?? "unknown"));
-                    return;
-                }
-
-                // Condition 2 & 3: All opened card selection Tasks are backend-confirmed and CardReward selection completed
-                bool tasksConfirmed = true;
-                foreach (KeyValuePair<string, int> pair in RewardGateExpected)
-                {
-                    int n;
-                    if (!RewardGateConfirmed.TryGetValue(pair.Key, out n) || n < pair.Value)
-                    {
-                        tasksConfirmed = false;
-                        break;
-                    }
-                }
-                if (tasksConfirmed)
-                {
-                    foreach (var waiter in RewardSelectionWaiters.Values)
-                    {
-                        if (waiter != null && !waiter.Task.IsCompleted)
-                        {
-                            tasksConfirmed = false;
-                            break;
-                        }
-                    }
-                }
-                if (!tasksConfirmed)
-                {
-                    GD.Print(string.Format("[AiTeammate][Flow] event-reward-gate-waiting trigger={0} missing=reward-tasks-unconfirmed", trigger ?? "unknown"));
-                    return;
                 }
 
                 // Condition 4: NCardRewardSelectionScreen has been removed/popped
@@ -10806,6 +15302,56 @@ namespace AiTeammate
                 if (!rewardScreenRemovedOrComplete)
                 {
                     GD.Print(string.Format("[AiTeammate][Flow] event-reward-gate-waiting trigger={0} missing=rewards-screen-incomplete", trigger ?? "unknown"));
+                    if (ReconcileCompletedRewardGate(trigger, set, actualSet)) return; return;
+                }
+
+                if (!setComplete)
+                {
+                    GD.Print(string.Format("[AiTeammate][Flow] event-reward-gate-waiting trigger={0} missing=rewards-set-incomplete", trigger ?? "unknown"));
+                    return;
+                }
+
+                // Directive #5.61: If backend set is completed/skipped and reward screens are removed/completed,
+                // auto-reconcile any remaining unconfirmed reward items in the set as natively skipped.
+                if (setComplete && rewardScreenRemovedOrComplete && cardScreenRemoved)
+                {
+                    if (actualSet != null && actualSet.Rewards != null)
+                    {
+                        foreach (var r in actualSet.Rewards)
+                        {
+                            if (r != null && !ConfirmedRewardObjects.ContainsKey(r))
+                            {
+                                MarkRewardBackendSkipped(r, "screen-closed-set-completed");
+                            }
+                        }
+                    }
+                }
+
+                // Condition 2 & 3: All opened card selection Tasks are backend-confirmed and CardReward selection completed
+                bool tasksConfirmed = true;
+                foreach (KeyValuePair<string, int> pair in RewardGateExpected)
+                {
+                    int n;
+                    if (!RewardGateConfirmed.TryGetValue(pair.Key, out n) || n < pair.Value)
+                    {
+                        tasksConfirmed = false;
+                        break;
+                    }
+                }
+                if (tasksConfirmed)
+                {
+                    foreach (var waiter in RewardSelectionWaiters.Values)
+                    {
+                        if (waiter != null && !waiter.Task.IsCompleted)
+                        {
+                            tasksConfirmed = false;
+                            break;
+                        }
+                    }
+                }
+                if (!tasksConfirmed)
+                {
+                    GD.Print(string.Format("[AiTeammate][Flow] event-reward-gate-waiting trigger={0} missing=reward-tasks-unconfirmed", trigger ?? "unknown"));
                     return;
                 }
 
@@ -10940,7 +15486,7 @@ namespace AiTeammate
         {
             string requestedGeneration = CurrentRunGeneration();
             await WaitForRewardGate();
-            if (requestedGeneration != CurrentRunGeneration()) { GD.Print("[AiTeammate][Flow] route-follow-rejected reason=stale-generation key=" + key); return; }
+            if (requestedGeneration != CurrentRunGeneration()) { GD.Print("[AiTeammate][Flow] route-follow-replay-dropped key=" + key + " reason=stale-generation"); return; }
             bool reserved = false;
             lock (RewardGateSync)
             {
@@ -11134,8 +15680,8 @@ namespace AiTeammate
                         MethodInfo method = AccessTools.Method(synchronizer.GetType(), "PlayerVotedForMapCoord");
                         if (method != null)
                         {
-                            GD.Print("[AiTeammate][Flow] route-follow-replay owner=" + (player != null ? player.NetId.ToString() : "unknown") + " destination=" + DestinationKey(destination) + " key=" + key);
-                            method.Invoke(synchronizer, new object[] { player, source, destination });
+                            GD.Print("[AiTeammate][Flow] route-follow-replay owner=P1 destination=" + DestinationKey(destination) + " key=" + key);
+                            method.Invoke(synchronizer, new object[] { player, source, destination }); Player p2 = GetPlayer2(); if (p2 != null) { method.Invoke(synchronizer, new object[] { p2, source, destination }); GD.Print("[AiTeammate][Flow] p2-route-follow owner=P2 destination=" + DestinationKey(destination) + " source=replay"); }
                         }
                     }
                 }
@@ -12459,6 +17005,11 @@ namespace AiTeammate
 
 
 
+            // Directive #5.85 (Task 5): the one-shot preload probe runs during mod init, i.e. before
+            // SpireStrategist is guaranteed to be loadable. Re-probe at decision time so a Core that
+            // became available later is picked up without requiring a game restart.
+            if (!SpireStrategistAvailable && FindLiveSpireStrategistAssembly() != null) SpireStrategistAvailable = true;
+
             if (SpireStrategistAvailable && p2 != null)
 
             {
@@ -12725,6 +17276,11 @@ namespace AiTeammate
 
                                             int bestScoreIdx = 0;
 
+                                            // Directive #5.85 (Task 5): per-option Core scores, aligned by
+                                            // enumeration index with `options` (NaN == Core gave no score).
+                                            double[] strategistScores = new double[options.Count];
+                                            for (int ss = 0; ss < strategistScores.Length; ss++) strategistScores[ss] = double.NaN;
+
 
 
                                             if (optScores != null)
@@ -12752,6 +17308,8 @@ namespace AiTeammate
                                                     object sObj = scoreProp != null ? scoreProp.GetValue(item, null) : null;
 
                                                     double sVal = sObj is double ? (double)sObj : (sObj is float ? (float)sObj : 0.0);
+
+                                                    if (sIdx >= 0 && sIdx < strategistScores.Length) strategistScores[sIdx] = sVal;
 
                                                     string cardLabel = !string.IsNullOrEmpty(n) ? n : (k ?? ("opt-" + sIdx));
 
@@ -12853,10 +17411,29 @@ namespace AiTeammate
                                             {
                                                 int altIdx = -1;
                                                 double altScore = double.MinValue;
+                                                bool altFromCore = false;
+                                                // Directive #5.85 (Task 5): when avoiding a co-op-only card, rank the
+                                                // remaining candidates with the scores Core just produced for THIS
+                                                // evaluation; only fall back to card_scores when Core gave no score.
                                                 for (int ai = 0; ai < options.Count; ai++)
                                                 {
-                                                    if (options[ai].Card != null && options[ai].Card.TargetType != TargetType.AnyPlayer && options[ai].Card.TargetType != TargetType.AnyAlly)
+                                                    if (options[ai].Card == null) continue;
+                                                    if (options[ai].Card.TargetType == TargetType.AnyPlayer || options[ai].Card.TargetType == TargetType.AnyAlly) continue;
+                                                    double coreScore = (ai < strategistScores.Length) ? strategistScores[ai] : double.NaN;
+                                                    if (double.IsNaN(coreScore)) continue;
+                                                    if (coreScore > altScore)
                                                     {
+                                                        altScore = coreScore;
+                                                        altIdx = ai;
+                                                        altFromCore = true;
+                                                    }
+                                                }
+                                                if (altIdx < 0)
+                                                {
+                                                    for (int ai = 0; ai < options.Count; ai++)
+                                                    {
+                                                        if (options[ai].Card == null) continue;
+                                                        if (options[ai].Card.TargetType == TargetType.AnyPlayer || options[ai].Card.TargetType == TargetType.AnyAlly) continue;
                                                         double ascore = GetCardScore(options[ai].Card.Id.ToString());
                                                         if (ascore > altScore)
                                                         {
@@ -12870,8 +17447,8 @@ namespace AiTeammate
                                                     chosenIndex = altIdx;
                                                     chosenCard = options[altIdx].Card;
                                                     chosenId = chosenCard != null ? chosenCard.Id.ToString() : ("idx-" + chosenIndex);
-                                                    source = "heuristic-avoid-ally-card";
-                                                    GD.Print(string.Format("[AiTeammate][Flow] p2-card-ally-avoided altIdx={0} altCard={1}", altIdx, chosenId));
+                                                    source = altFromCore ? "core" : "heuristic-avoid-ally-card";
+                                                    GD.Print(string.Format("[AiTeammate][Flow] p2-card-ally-avoided altIdx={0} altCard={1} prefer={2} score={3}", altIdx, chosenId, altFromCore ? "core" : "card_scores", altScore.ToString("F1")));
                                                 }
                                             }
 
@@ -13193,158 +17770,86 @@ namespace AiTeammate
 
 
         public static void EvaluateEventOption(Player p2, List<NEventOptionButton> buttons, out NEventOptionButton chosenButton, out string pickId, out string source)
-
         {
-
             chosenButton = null;
-
             pickId = "leave";
-
             source = "fallback";
-
             if (buttons == null || buttons.Count == 0) return;
 
-
-
             DateTime startTime = DateTime.UtcNow;
-
             bool strategistSuccess = false;
 
-
-
-            if (SpireStrategistAvailable && p2 != null)
-
+            if (p2 != null)
             {
-
+                object p2Event = null;
                 try
-
                 {
-
-                    IRunState run = GetRunState();
-
-                    Type eventPolicyType = AccessTools.TypeByName("SpireStrategist.Core.EventPolicy");
-
-                    Type snapReaderType = AccessTools.TypeByName("SpireStrategist.Mod.SnapshotReader");
-
-                    Type eventChoiceType = AccessTools.TypeByName("SpireStrategist.Core.EventChoice");
-
-
-
-                    if (eventPolicyType != null && snapReaderType != null && eventChoiceType != null && run != null)
-
+                    var rm = RunManager.Instance;
+                    if (rm != null && rm.EventSynchronizer != null)
                     {
-
-                        MethodInfo readMethod = AccessTools.Method(snapReaderType, "Read", new Type[] { typeof(IRunState), typeof(Player) });
-
-                        if (readMethod != null)
-
+                        PropertyInfo eventsProp = AccessTools.Property(rm.EventSynchronizer.GetType(), "Events");
+                        var events = eventsProp != null ? eventsProp.GetValue(rm.EventSynchronizer, null) as System.Collections.IEnumerable : null;
+                        if (events != null)
                         {
-
-                            object snapshot = readMethod.Invoke(null, new object[] { run, p2 });
-
-                            if (snapshot != null)
-
+                            foreach (var ev in events)
                             {
-
-                                FieldInfo pcField = AccessTools.Field(snapshot.GetType(), "<PlayerCount>k__BackingField");
-
-                                if (pcField != null) pcField.SetValue(snapshot, 1);
-
-
-
-                                Type listType = typeof(List<>).MakeGenericType(eventChoiceType);
-
-                                IList choiceList = Activator.CreateInstance(listType) as IList;
-
-
-
-                                for (int i = 0; i < buttons.Count; i++)
-
+                                if (ev == null) continue;
+                                PropertyInfo ownerProp = AccessTools.Property(ev.GetType(), "Owner");
+                                Player pl = ownerProp != null ? ownerProp.GetValue(ev, null) as Player : null;
+                                if (pl != null && (pl == p2 || pl.NetId == p2.NetId || pl.NetId == TurnCoordinator.GetPlayer2NetId()))
                                 {
-
-                                    var b = buttons[i];
-
-                                    string desc = b.Option != null && b.Option.Description != null ? b.Option.Description.GetFormattedText() : "";
-
-                                    string title = b.Option != null && b.Option.Title != null ? b.Option.Title.GetFormattedText() : ("option_" + i);
-
-                                    bool enabled = b != null && b.IsEnabled && (b.Option == null || !b.Option.IsLocked);
-
-
-
-                                    object choiceObj = CreateEventChoice(eventChoiceType, i.ToString(), title, enabled);
-
-                                    if (choiceObj != null) choiceList.Add(choiceObj);
-
+                                    p2Event = ev;
+                                    break;
                                 }
-
-
-
-                                MethodInfo evalMethod = AccessTools.Method(eventPolicyType, "Evaluate");
-
-                                if (evalMethod != null && (DateTime.UtcNow - startTime).TotalSeconds < 5.0)
-
-                                {
-
-                                    object evalResult = evalMethod.Invoke(null, new object[] { snapshot, choiceList });
-
-                                    if (evalResult != null)
-
-                                    {
-
-                                        PropertyInfo recProp = AccessTools.Property(evalResult.GetType(), "RecommendedKey");
-
-                                        string recKey = recProp != null ? recProp.GetValue(evalResult, null) as string : null;
-
-                                        if (!string.IsNullOrEmpty(recKey))
-
-                                        {
-
-                                            int idx;
-
-                                            if (int.TryParse(recKey, out idx) && idx >= 0 && idx < buttons.Count)
-
-                                            {
-
-                                                chosenButton = buttons[idx];
-
-                                                pickId = idx.ToString();
-
-                                                source = "strategist";
-
-                                                strategistSuccess = true;
-
-                                            }
-
-                                        }
-
-                                    }
-
-                                }
-
                             }
-
+                            if (p2Event == null)
+                            {
+                                foreach (var ev in events) { if (ev != null) { p2Event = ev; break; } }
+                            }
                         }
-
                     }
-
+                    if (p2Event == null)
+                    {
+                        IRunState run = GetRunState();
+                        if (run != null)
+                        {
+                            PropertyInfo cp = AccessTools.Property(run.GetType(), "CurrentRoom");
+                            object room = cp != null ? cp.GetValue(run, null) : null;
+                            if (room != null)
+                            {
+                                PropertyInfo evProp = AccessTools.Property(room.GetType(), "Event");
+                                if (evProp != null) p2Event = evProp.GetValue(room, null);
+                            }
+                        }
+                    }
                 }
+                catch { }
 
-                catch (Exception ex)
+                bool isAncient = p2Event != null && (p2Event.GetType().Name.Contains("Ancient") || p2Event is MegaCrit.Sts2.Core.Models.AncientEventModel);
 
+                List<object> optList = new List<object>();
+                for (int i = 0; i < buttons.Count; i++)
                 {
-
-                    GD.PrintErr("[AiTeammate][Flow] SpireStrategist event evaluate error: " + ex.Message);
-
+                    optList.Add(buttons[i] != null ? buttons[i].Option : null);
                 }
 
+                int decIdx;
+                string outPickId;
+                string outSource;
+                string outReason;
+                if (TryEvaluateEventViaStrategist(p2, p2Event, optList, isAncient, out decIdx, out outPickId, out outSource, out outReason))
+                {
+                    if (decIdx >= 0 && decIdx < buttons.Count && buttons[decIdx] != null)
+                    {
+                        chosenButton = buttons[decIdx];
+                        pickId = outPickId;
+                        source = outSource;
+                        strategistSuccess = true;
+                    }
+                }
             }
 
-
-
             if (strategistSuccess) return;
-
-
 
             // Conservative Fallback: choose option with no HP loss and no curse
 
@@ -13446,12 +17951,646 @@ namespace AiTeammate
 
 
 
-        public static bool TryAutoShopP2(Player p2) { try { if(p2==null||!ShopCardRemovalEnabled||p2.Gold<25)return false; object state=RunManager.Instance!=null?RunManager.Instance.DebugOnlyGetState():null; object room=null; if(state!=null){var cp=state.GetType().GetProperty("CurrentRoom",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic);room=cp!=null?cp.GetValue(state,null):null;} if(room==null||room.GetType().Name.IndexOf("MerchantRoom",StringComparison.OrdinalIgnoreCase)<0)return false; var ip=room.GetType().GetProperty("Inventories",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic); var list=ip!=null?ip.GetValue(room,null) as IEnumerable:null; object inv=null; if(list!=null)foreach(object x in list){object op=GetMember(x,"Player");if(op is Player && ((Player)op).NetId==p2.NetId){inv=x;break;}} if(inv==null)return false; int before=p2.Gold;GD.Print("[AiTeammate][Flow] shop-offer owner=P2 gold-before="+before); bool did=false; foreach(object e in EnumerateEntries(inv)){string n=e.GetType().Name;int cost=ReadInt(e,"Cost",int.MaxValue);if(n.IndexOf("Removal",StringComparison.OrdinalIgnoreCase)>=0&&ReadBool(e,"IsStocked",true)&&p2.Gold-cost>=25&&InvokePurchase(e,inv,true)){did=true;GD.Print("[AiTeammate][Flow] shop-resolved kind=shop-removal gold-after="+p2.Gold);break;}} foreach(object e in EnumerateEntries(inv)){string n=e.GetType().Name;int cost=ReadInt(e,"Cost",int.MaxValue);if(n.IndexOf("Relic",StringComparison.OrdinalIgnoreCase)>=0&&ReadBool(e,"IsStocked",true)&&p2.Gold-cost>=25&&InvokePurchase(e,inv,false)){did=true;GD.Print("[AiTeammate][Flow] shop-resolved kind=relic gold-after="+p2.Gold);break;}} foreach(object e in EnumerateEntries(inv)){string n=e.GetType().Name;int cost=ReadInt(e,"Cost",int.MaxValue);if(n.IndexOf("CardEntry",StringComparison.OrdinalIgnoreCase)>=0&&ReadBool(e,"IsStocked",true)&&p2.Gold-cost>=25&&InvokePurchase(e,inv,false)){did=true;GD.Print("[AiTeammate][Flow] shop-resolved kind=card gold-after="+p2.Gold);break;}} return did;}catch(Exception ex){GD.PrintErr("[AiTeammate][Flow] shop fail-open: "+ex);return false;} }
-        static object GetMember(object o,string n){if(o==null)return null;var p=o.GetType().GetProperty(n,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic);if(p!=null)try{return p.GetValue(o,null);}catch{}var f=o.GetType().GetField(n,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic);if(f!=null)try{return f.GetValue(o);}catch{}return null;}
-        static int ReadInt(object o,string n,int d){try{return Convert.ToInt32(GetMember(o,n));}catch{return d;}}
-        static bool ReadBool(object o,string n,bool d){try{return Convert.ToBoolean(GetMember(o,n));}catch{return d;}}
-        static IEnumerable<object> EnumerateEntries(object inv){foreach(var p in inv.GetType().GetProperties(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)){if(!typeof(IEnumerable).IsAssignableFrom(p.PropertyType)||p.PropertyType==typeof(string))continue;IEnumerable e=null;try{e=p.GetValue(inv,null) as IEnumerable;}catch{}if(e!=null)foreach(object x in e)if(x!=null&&x.GetType().Name.IndexOf("Merchant",StringComparison.OrdinalIgnoreCase)>=0)yield return x;}}
-        static bool InvokePurchase(object e,object inv,bool wrapper){try{var m=e.GetType().GetMethod(wrapper?"OnTryPurchaseWrapper":"OnTryPurchase",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic);if(m==null)return false;var ps=m.GetParameters();var a=new object[ps.Length];for(int i=0;i<ps.Length;i++)a[i]=ps[i].ParameterType==typeof(bool)?(object)false:inv;object r=m.Invoke(e,a);var t=r as Task;if(t!=null)t.GetAwaiter().GetResult();return true;}catch(Exception ex){GD.PrintErr("[AiTeammate][Flow] shop purchase fail-open: "+ex.Message);return false;}}
+        // Directive #5.94 T3: SpireStrategist Core P2 Shop Purchase Plan & Iterative Execution
+        public class P2ShopPlanItem
+        {
+            public string Kind; // "card", "relic", "remove"
+            public object Entry;
+            public string Id;
+            public string Name;
+            public int Price;
+            public double BaseScore;
+            public double NetScore;
+            public CardModel TargetRemovalCard;
+            public bool IsHighQualityCard;
+        }
+
+        private static double ShopGoldCost(int price, int gold)
+        {
+            return (double)price / 40.0 * (gold < 150 ? 1.5 : 1.0);
+        }
+
+        private static int CountDeckCopies(object snapshot, object cardSnap)
+        {
+            if (snapshot == null || cardSnap == null) return 0;
+            try
+            {
+                var deckProp = snapshot.GetType().GetProperty("Deck");
+                var deckArr = deckProp != null ? deckProp.GetValue(snapshot, null) as Array : null;
+                if (deckArr == null) return 0;
+
+                var cnProp = cardSnap.GetType().GetProperty("ClassName");
+                string targetCn = cnProp != null ? cnProp.GetValue(cardSnap, null) as string : null;
+                if (string.IsNullOrEmpty(targetCn)) return 0;
+
+                int count = 0;
+                foreach (object c in deckArr)
+                {
+                    if (c == null) continue;
+                    var cCnProp = c.GetType().GetProperty("ClassName");
+                    string cn = cCnProp != null ? cCnProp.GetValue(c, null) as string : null;
+                    if (string.Equals(cn, targetCn, StringComparison.Ordinal)) count++;
+                }
+                return count;
+            }
+            catch { return 0; }
+        }
+
+        private static double GetCardEngineValue(Type cardCatType, object cardSnap)
+        {
+            if (cardCatType == null || cardSnap == null) return 0.0;
+            try
+            {
+                MethodInfo findMethod = cardCatType.GetMethod("Find", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (findMethod == null) return 0.0;
+                object profile = findMethod.Invoke(null, new object[] { cardSnap });
+                if (profile == null) return 0.0;
+
+                var drawProp = profile.GetType().GetProperty("Draw");
+                var energyProp = profile.GetType().GetProperty("Energy");
+                double d = drawProp != null ? Convert.ToDouble(drawProp.GetValue(profile, null)) : 0.0;
+                double e = energyProp != null ? Convert.ToDouble(energyProp.GetValue(profile, null)) : 0.0;
+                return d + e;
+            }
+            catch { return 0.0; }
+        }
+
+        private static double EvaluateShopCardScore(Assembly liveAsm, Type policyType, Type decisionOptType, object snapshot, CardModel cm, object cSnap)
+        {
+            try
+            {
+                object policy = TryGetStrategistPolicy(liveAsm);
+                if (policy == null) policy = CreatePolicyInstance(policyType);
+                if (policy == null) return -12.0;
+
+                MethodInfo evalMethod = null;
+                foreach (var m in policyType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    if (m.Name == "Evaluate" && m.GetParameters().Length == 2) { evalMethod = m; break; }
+                }
+                if (evalMethod == null) return -12.0;
+
+                Type optListType = typeof(List<>).MakeGenericType(decisionOptType);
+                IList optList = Activator.CreateInstance(optListType) as IList;
+
+                string cid = cm.Id.ToString();
+                object cOpt = Activator.CreateInstance(decisionOptType, new object[] { "card", cid, "card", true, cSnap, 0.0, 1, null });
+                object sOpt = Activator.CreateInstance(decisionOptType, new object[] { "skip", "skip", "skip", true, null, 0.0, 1, null });
+                optList.Add(cOpt);
+                optList.Add(sOpt);
+
+                object evalResult = evalMethod.Invoke(policy, new object[] { snapshot, optList });
+                if (evalResult == null) return -12.0;
+
+                PropertyInfo optsProp = evalResult.GetType().GetProperty("Options");
+                IEnumerable optScores = optsProp != null ? optsProp.GetValue(evalResult, null) as IEnumerable : null;
+                if (optScores != null)
+                {
+                    foreach (object item in optScores)
+                    {
+                        if (item == null) continue;
+                        var scoreProp = item.GetType().GetProperty("Score");
+                        object sObj = scoreProp != null ? scoreProp.GetValue(item, null) : null;
+                        if (sObj is double) return (double)sObj;
+                        if (sObj is float) return (float)sObj;
+                    }
+                }
+                return -12.0;
+            }
+            catch { return -12.0; }
+        }
+
+        public static List<P2ShopPlanItem> ComputeP2ShopPlan(Player p2, object inv)
+        {
+            if (p2 == null || inv == null) return null;
+
+            Assembly liveAsm = FindLiveSpireStrategistAssembly();
+            if (liveAsm == null) throw new Exception("no-assembly");
+
+            Type snapReaderType = liveAsm.GetType("SpireStrategist.Mod.SnapshotReader");
+            Type policyType = liveAsm.GetType("SpireStrategist.Core.Policy");
+            Type decisionOptType = liveAsm.GetType("SpireStrategist.Core.DecisionOption");
+            Type stratValType = liveAsm.GetType("SpireStrategist.Core.StrategicValue");
+            Type relicValType = liveAsm.GetType("SpireStrategist.Core.RelicValue");
+            Type cardCatType = liveAsm.GetType("SpireStrategist.Core.CardCatalog");
+
+            if (snapReaderType == null || policyType == null || decisionOptType == null || stratValType == null || relicValType == null)
+            {
+                throw new Exception("types-missing");
+            }
+
+            MethodInfo readMethod = null;
+            MethodInfo readCardMethod = null;
+            foreach (var m in snapReaderType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+            {
+                if (m.Name == "Read" && m.GetParameters().Length == 2) readMethod = m;
+                else if (m.Name == "ReadCard" && m.GetParameters().Length == 1) readCardMethod = m;
+            }
+
+            if (readMethod == null || readCardMethod == null) throw new Exception("read-methods-missing");
+
+            IRunState run = GetRunState();
+            if (run == null) throw new Exception("no-runstate");
+
+            object snapshot = readMethod.Invoke(null, new object[] { run, p2 });
+            if (snapshot == null) throw new Exception("no-snapshot");
+
+            FieldInfo pcField = AccessTools.Field(snapshot.GetType(), "<PlayerCount>k__BackingField");
+            if (pcField != null) pcField.SetValue(snapshot, 1);
+
+            ConstructorInfo svCtor = stratValType.GetConstructor(new Type[] { snapshot.GetType() });
+            if (svCtor == null)
+            {
+                foreach (var ctor in stratValType.GetConstructors())
+                {
+                    if (ctor.GetParameters().Length == 1) { svCtor = ctor; break; }
+                }
+            }
+            MethodInfo removeMethod = stratValType.GetMethod("Remove", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            object svInstance = (svCtor != null && removeMethod != null) ? svCtor.Invoke(new object[] { snapshot }) : null;
+
+            MethodInfo relicEvalMethod = null;
+            foreach (var m in relicValType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+            {
+                if (m.Name == "Evaluate" && m.GetParameters().Length >= 2) { relicEvalMethod = m; break; }
+            }
+
+            List<P2ShopPlanItem> items = new List<P2ShopPlanItem>();
+
+            // 1. Removal
+            if (ShopCardRemovalEnabled && svInstance != null)
+            {
+                object removalEntry = GetMember(inv, "CardRemovalEntry");
+                if (removalEntry != null && ReadBool(removalEntry, "IsStocked", true) && !ReadBool(removalEntry, "Used", false))
+                {
+                    int cost = ReadInt(removalEntry, "Cost", int.MaxValue);
+                    if (cost <= p2.Gold && p2.Deck != null && p2.Deck.Cards != null)
+                    {
+                        CardModel bestCard = null;
+                        double bestRemoveScore = double.MinValue;
+
+                        foreach (CardModel c in p2.Deck.Cards)
+                        {
+                            if (c == null || !IsCardRemovable(c)) continue;
+                            object cSnap = readCardMethod.Invoke(null, new object[] { c });
+                            if (cSnap != null)
+                            {
+                                double sc = Convert.ToDouble(removeMethod.Invoke(svInstance, new object[] { cSnap }));
+                                if (!double.IsNaN(sc) && sc > bestRemoveScore)
+                                {
+                                    bestRemoveScore = sc;
+                                    bestCard = c;
+                                }
+                            }
+                        }
+
+                        if (bestCard != null && bestRemoveScore > double.MinValue)
+                        {
+                            double netScore = bestRemoveScore - ShopGoldCost(cost, p2.Gold);
+                            items.Add(new P2ShopPlanItem
+                            {
+                                Kind = "remove",
+                                Entry = removalEntry,
+                                Id = "card-removal",
+                                Name = bestCard.Id.ToString(),
+                                Price = cost,
+                                BaseScore = bestRemoveScore,
+                                NetScore = netScore,
+                                TargetRemovalCard = bestCard,
+                                IsHighQualityCard = false
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 2. Relics
+            if (AutoShopEnabled && relicEvalMethod != null)
+            {
+                IEnumerable relicEntries = GetMember(inv, "RelicEntries") as IEnumerable;
+                if (relicEntries != null)
+                {
+                    foreach (object rentry in relicEntries)
+                    {
+                        if (rentry == null || !ReadBool(rentry, "IsStocked", true)) continue;
+                        int cost = ReadInt(rentry, "Cost", int.MaxValue);
+                        if (cost > p2.Gold) continue;
+
+                        object rModel = GetMember(rentry, "Model");
+                        if (rModel == null) continue;
+                        if (!IsShopRelicSafeForBackgroundPurchase(rModel as RelicModel)) continue;
+
+                        object idObj = GetMember(rModel, "Id");
+                        string rid = idObj != null ? idObj.ToString() : "unknown";
+                        object[] rArgs = (relicEvalMethod.GetParameters().Length == 2)
+                            ? new object[] { rid, snapshot }
+                            : new object[] { rid, snapshot, false };
+
+                        object assessment = relicEvalMethod.Invoke(null, rArgs);
+                        double relicVal = 0.0;
+                        if (assessment != null)
+                        {
+                            PropertyInfo valProp = AccessTools.Property(assessment.GetType(), "Value");
+                            if (valProp != null) relicVal = Convert.ToDouble(valProp.GetValue(assessment, null));
+                        }
+
+                        double netScore = relicVal - ShopGoldCost(cost, p2.Gold);
+                        items.Add(new P2ShopPlanItem
+                        {
+                            Kind = "relic",
+                            Entry = rentry,
+                            Id = rid,
+                            Name = rid,
+                            Price = cost,
+                            BaseScore = relicVal,
+                            NetScore = netScore,
+                            TargetRemovalCard = null,
+                            IsHighQualityCard = false
+                        });
+                    }
+                }
+            }
+
+            // 3. Cards
+            if (AutoShopEnabled)
+            {
+                List<object> cardEntriesList = new List<object>();
+                IEnumerable cardEntries = GetMember(inv, "CardEntries") as IEnumerable;
+                if (cardEntries != null)
+                {
+                    foreach (object ce in cardEntries) if (ce != null) cardEntriesList.Add(ce);
+                }
+                else
+                {
+                    IEnumerable charEntries = GetMember(inv, "CharacterCardEntries") as IEnumerable;
+                    if (charEntries != null) foreach (object ce in charEntries) if (ce != null) cardEntriesList.Add(ce);
+                    IEnumerable colorEntries = GetMember(inv, "ColorlessCardEntries") as IEnumerable;
+                    if (colorEntries != null) foreach (object ce in colorEntries) if (ce != null) cardEntriesList.Add(ce);
+                }
+
+                foreach (object centry in cardEntriesList)
+                {
+                    if (centry == null || !ReadBool(centry, "IsStocked", true)) continue;
+                    int cost = ReadInt(centry, "Cost", int.MaxValue);
+                    if (cost > p2.Gold) continue;
+
+                    object cr = GetMember(centry, "CreationResult");
+                    CardModel cm = cr != null ? GetMember(cr, "Card") as CardModel : null;
+                    if (cm == null) continue;
+
+                    object cSnap = readCardMethod.Invoke(null, new object[] { cm });
+                    if (cSnap == null) continue;
+
+                    string cid = cm.Id.ToString();
+                    double cardScore = EvaluateShopCardScore(liveAsm, policyType, decisionOptType, snapshot, cm, cSnap);
+                    int duplicates = CountDeckCopies(snapshot, cSnap);
+                    double engine = GetCardEngineValue(cardCatType, cSnap);
+                    double extraDuplicate = duplicates * (engine >= 1.5 ? 1.0 : 3.0);
+                    double netScore = cardScore - ShopGoldCost(cost, p2.Gold) - 1.5 - extraDuplicate;
+                    bool isHighQuality = (cardScore >= 7.0 && duplicates == 0);
+
+                    items.Add(new P2ShopPlanItem
+                    {
+                        Kind = "card",
+                        Entry = centry,
+                        Id = cid,
+                        Name = cid,
+                        Price = cost,
+                        BaseScore = cardScore,
+                        NetScore = netScore,
+                        TargetRemovalCard = null,
+                        IsHighQualityCard = isHighQuality
+                    });
+                }
+            }
+
+            return items;
+        }
+
+        public static bool TryAutoShopP2(Player p2)
+        {
+            try
+            {
+                if (p2 == null || (!AutoShopEnabled && !ShopCardRemovalEnabled) || p2.Gold < 25) return false;
+
+                object state = RunManager.Instance != null ? RunManager.Instance.DebugOnlyGetState() : null;
+                object room = null;
+                if (state != null)
+                {
+                    var cp = state.GetType().GetProperty("CurrentRoom", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    room = cp != null ? cp.GetValue(state, null) : null;
+                }
+                if (room == null || room.GetType().Name.IndexOf("MerchantRoom", StringComparison.OrdinalIgnoreCase) < 0) return false;
+
+                var ip = room.GetType().GetProperty("Inventories", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var list = ip != null ? ip.GetValue(room, null) as IEnumerable : null;
+                object inv = null;
+                if (list != null)
+                {
+                    foreach (object x in list)
+                    {
+                        object op = GetMember(x, "Player");
+                        if (op is Player && ((Player)op).NetId == p2.NetId)
+                        {
+                            inv = x;
+                            break;
+                        }
+                    }
+                }
+                if (inv == null) return false;
+
+                string roomId = "";
+                try
+                {
+                    var idProp = room.GetType().GetProperty("Id");
+                    if (idProp != null)
+                    {
+                        var idVal = idProp.GetValue(room, null);
+                        if (idVal != null) roomId = idVal.ToString();
+                    }
+                }
+                catch { }
+                if (string.IsNullOrEmpty(roomId)) roomId = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(room).ToString();
+
+                string generation = CurrentRunGeneration();
+                string visitKey = generation + "|room=" + roomId + "|tryautoshop";
+                if (HandledShopVisits.Contains(visitKey))
+                {
+                    return false;
+                }
+                HandledShopVisits.Add(visitKey);
+
+                int before = p2.Gold;
+                GD.Print("[AiTeammate][Flow] shop-offer owner=P2 gold-before=" + before);
+
+                int initialReserve = Math.Min(150, Math.Max(0, before) * 35 / 100);
+
+                List<P2ShopPlanItem> planItems = null;
+                string coreFallbackReason = null;
+                try
+                {
+                    planItems = ComputeP2ShopPlan(p2, inv);
+                }
+                catch (Exception exPlan)
+                {
+                    coreFallbackReason = exPlan.Message;
+                }
+
+                if (planItems != null)
+                {
+                    int boughtCount = 0;
+                    int spentGold = 0;
+                    int cardsBought = 0;
+
+                    while (true)
+                    {
+                        int currentGold = p2.Gold;
+                        int currentReserve = Math.Min(150, Math.Max(0, currentGold) * 35 / 100);
+
+                        P2ShopPlanItem bestItem = null;
+                        double bestNet = 0.0;
+
+                        foreach (var item in planItems)
+                        {
+                            if (item == null) continue;
+                            if (!ReadBool(item.Entry, "IsStocked", true)) continue;
+                            if (item.Kind == "remove" && ReadBool(item.Entry, "Used", false)) continue;
+                            if (item.Kind == "remove" && ExecutedShopRemovals.Contains(generation + "|" + roomId)) continue;
+                            if (item.Price > currentGold) continue;
+                            if (item.Kind == "card" && cardsBought >= 2) continue;
+
+                            // Recompute NetScore with currentGold
+                            double goldCost = ShopGoldCost(item.Price, currentGold);
+                            double currentNet;
+                            if (item.Kind == "remove")
+                            {
+                                currentNet = item.BaseScore - goldCost;
+                            }
+                            else if (item.Kind == "relic")
+                            {
+                                currentNet = item.BaseScore - goldCost;
+                            }
+                            else // card
+                            {
+                                currentNet = item.BaseScore - goldCost - 1.5;
+                            }
+
+                            if (currentNet <= 0.0) continue;
+
+                            // Reserve condition: remaining gold >= reserve, or high quality card with positive net
+                            bool reserveAllowed = (currentGold - item.Price >= currentReserve) || (item.Kind == "card" && item.IsHighQualityCard);
+                            if (!reserveAllowed) continue;
+
+                            if (currentNet > bestNet)
+                            {
+                                bestNet = currentNet;
+                                bestItem = item;
+                                bestItem.NetScore = currentNet;
+                            }
+                        }
+
+                        if (bestItem == null) break;
+
+                        bool purchaseOk = false;
+                        if (bestItem.Kind == "remove")
+                        {
+                            IsExecutingP2AutoRemoval = true;
+                            LastShopRemovalTargetCardId = bestItem.TargetRemovalCard != null ? bestItem.TargetRemovalCard.Id.ToString() : null;
+                            try
+                            {
+                                purchaseOk = InvokePurchase(bestItem.Entry, inv, true);
+                            }
+                            finally
+                            {
+                                IsExecutingP2AutoRemoval = false;
+                            }
+                        }
+                        else
+                        {
+                            purchaseOk = InvokePurchase(bestItem.Entry, inv, false);
+                        }
+
+                        if (purchaseOk)
+                        {
+                            boughtCount++;
+                            spentGold += bestItem.Price;
+                            if (bestItem.Kind == "card") cardsBought++;
+                            if (bestItem.Kind == "remove") ExecutedShopRemovals.Add(generation + "|" + roomId);
+
+                            GD.Print(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                                "[AiTeammate][Flow] shop-resolved kind={0} item={1} price={2} net={3:F1} reason=core source=spire-strategist",
+                                bestItem.Kind, bestItem.Name, bestItem.Price, bestItem.NetScore));
+                        }
+                        else
+                        {
+                            // Purchase failed or was rejected; don't retry this item
+                            planItems.Remove(bestItem);
+                        }
+                    }
+
+                    if (boughtCount > 0)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Flow] shop-purchase-summary bought={0} spent={1} gold-after={2} reason=core",
+                            boughtCount, spentGold, p2.Gold));
+                        return true;
+                    }
+                    else
+                    {
+                        GD.Print(string.Format("[AiTeammate][Flow] shop-purchase-summary bought=0 reason=core-no-positive-net reserve={0}",
+                            initialReserve));
+                        return false;
+                    }
+                }
+                else
+                {
+                    GD.Print(string.Format("[AiTeammate][Flow] shop-core-fallback reason={0}", coreFallbackReason ?? "no-plan"));
+
+                    bool did = false;
+                    int fallbackBought = 0;
+                    int fallbackSpent = 0;
+
+                    // Existing hardcoded fallback order: removal -> relic -> card
+                    foreach (object e in EnumerateEntries(inv))
+                    {
+                        string n = e.GetType().Name;
+                        int cost = ReadInt(e, "Cost", int.MaxValue);
+                        if (n.IndexOf("Removal", StringComparison.OrdinalIgnoreCase) >= 0 && ReadBool(e, "IsStocked", true) && !ReadBool(e, "Used", false) && p2.Gold - cost >= 25 && InvokePurchase(e, inv, true))
+                        {
+                            did = true;
+                            fallbackBought++;
+                            fallbackSpent += cost;
+                            GD.Print("[AiTeammate][Flow] shop-resolved kind=shop-removal gold-after=" + p2.Gold);
+                            break;
+                        }
+                    }
+
+                    foreach (object e in EnumerateEntries(inv))
+                    {
+                        string n = e.GetType().Name;
+                        int cost = ReadInt(e, "Cost", int.MaxValue);
+                        if (n.IndexOf("Relic", StringComparison.OrdinalIgnoreCase) >= 0 && ReadBool(e, "IsStocked", true) && p2.Gold - cost >= 25 && InvokePurchase(e, inv, false))
+                        {
+                            did = true;
+                            fallbackBought++;
+                            fallbackSpent += cost;
+                            GD.Print("[AiTeammate][Flow] shop-resolved kind=relic gold-after=" + p2.Gold);
+                            break;
+                        }
+                    }
+
+                    foreach (object e in EnumerateEntries(inv))
+                    {
+                        string n = e.GetType().Name;
+                        int cost = ReadInt(e, "Cost", int.MaxValue);
+                        if (n.IndexOf("CardEntry", StringComparison.OrdinalIgnoreCase) >= 0 && ReadBool(e, "IsStocked", true) && p2.Gold - cost >= 25 && InvokePurchase(e, inv, false))
+                        {
+                            did = true;
+                            fallbackBought++;
+                            fallbackSpent += cost;
+                            GD.Print("[AiTeammate][Flow] shop-resolved kind=card gold-after=" + p2.Gold);
+                            break;
+                        }
+                    }
+
+                    GD.Print(string.Format("[AiTeammate][Flow] shop-purchase-summary bought={0} spent={1} gold-after={2} reason=fallback",
+                        fallbackBought, fallbackSpent, p2.Gold));
+                    return did;
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Flow] shop fail-open: " + ex);
+                return false;
+            }
+        }
+
+        public static object GetMember(object o, string n)
+        {
+            if (o == null) return null;
+            var p = o.GetType().GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p != null) try { return p.GetValue(o, null); } catch { }
+            var f = o.GetType().GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (f != null) try { return f.GetValue(o); } catch { }
+            return null;
+        }
+
+        public static int ReadInt(object o, string n, int d)
+        {
+            try { return Convert.ToInt32(GetMember(o, n)); } catch { return d; }
+        }
+
+        public static bool ReadBool(object o, string n, bool d)
+        {
+            try { return Convert.ToBoolean(GetMember(o, n)); } catch { return d; }
+        }
+
+        public static IEnumerable<object> EnumerateEntries(object inv)
+        {
+            if (inv == null) yield break;
+            var remProp = inv.GetType().GetProperty("CardRemovalEntry", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (remProp != null)
+            {
+                object rem = null;
+                try { rem = remProp.GetValue(inv, null); } catch { }
+                if (rem != null) yield return rem;
+            }
+
+            foreach (var p in inv.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                if (!typeof(IEnumerable).IsAssignableFrom(p.PropertyType) || p.PropertyType == typeof(string)) continue;
+                IEnumerable e = null;
+                try { e = p.GetValue(inv, null) as IEnumerable; } catch { }
+                if (e != null)
+                {
+                    foreach (object x in e)
+                    {
+                        if (x != null && x.GetType().Name.IndexOf("Merchant", StringComparison.OrdinalIgnoreCase) >= 0)
+                            yield return x;
+                    }
+                }
+            }
+        }
+
+        public static bool InvokePurchase(object e, object inv, bool wrapper)
+        {
+            try
+            {
+                MethodInfo m = e.GetType().GetMethod(wrapper ? "OnTryPurchaseWrapper" : "OnTryPurchase", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (m == null && !wrapper)
+                {
+                    m = e.GetType().GetMethod("OnTryPurchaseWrapper", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+                if (m == null) return false;
+
+                var ps = m.GetParameters();
+                var a = new object[ps.Length];
+                for (int i = 0; i < ps.Length; i++)
+                {
+                    if (ps[i].ParameterType == typeof(bool)) a[i] = false;
+                    else if (inv != null && ps[i].ParameterType.IsAssignableFrom(inv.GetType())) a[i] = inv;
+                    else a[i] = null;
+                }
+
+                object r = m.Invoke(e, a);
+                Task<bool> tb = r as Task<bool>;
+                if (tb != null)
+                {
+                    return tb.GetAwaiter().GetResult();
+                }
+                Task t = r as Task;
+                if (t != null)
+                {
+                    t.GetAwaiter().GetResult();
+                    return true;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Flow] shop purchase fail-open: " + ex.Message);
+                return false;
+            }
+        }
 
         public static bool EvaluateShopRemoval(Player p2, out CardModel cardToRemove, out string source)
 
@@ -13519,6 +18658,12 @@ namespace AiTeammate
 
                 if (screen == null || !screen.IsInsideTree()) return;
 
+                if (!TurnCoordinator.CheckAndRecoverRunIdentity("TryAutoClaimP2Rewards"))
+                {
+                    GD.Print("[AiTeammate][Flow] p2-reward-claim-blocked reason=identity-drift-recovering-to-p1");
+                    return;
+                }
+
                 Player p2 = GetPlayer2();
 
                 if (p2 == null) return;
@@ -13553,15 +18698,15 @@ namespace AiTeammate
 
                     {
 
-                        // BS3: include P2 card rewards when enabled; the real native selection
-                        // screen completes its Task and synchronizer before this loop advances.
-
-                        if (reward is MegaCrit.Sts2.Core.Rewards.CardReward && !AutoCardRewardEnabled)
-
+                                                // BS3 & #5.63 & #5.64: P2 card reward must NEVER call OnRelease/GetReward/SelectLocalReward!
+                        MegaCrit.Sts2.Core.Rewards.CardReward cr = reward as MegaCrit.Sts2.Core.Rewards.CardReward;
+                        if (cr != null)
                         {
-
-                            continue;
-
+                            RewardBackendFlow.EnqueuePendingCardReward(cr);
+                            if (!AutoCardRewardEnabled)
+                            {
+                                continue;
+                            }
                         }
 
 
@@ -13576,6 +18721,12 @@ namespace AiTeammate
 
                             p2Buttons.Add(b);
 
+                            NRewardButton nrb = b as NRewardButton;
+                            if (nrb != null && reward is MegaCrit.Sts2.Core.Rewards.PotionReward)
+                            {
+                                FormatP2PotionRewardButton(nrb, null);
+                            }
+
                             p2Fingerprints.Add(RewardFingerprint(reward) + " instance=" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(reward));
 
                         }
@@ -13589,6 +18740,46 @@ namespace AiTeammate
                 if (p2Buttons.Count > 0)
 
                 {
+
+                    // Directive #5.93: claim PotionReward buttons LAST. Skipping a potion
+                    // terminally completes the whole native RewardsSet with state=Skipped
+                    // (RewardBackendFlow.SkipP2RewardsSetBackend), which force-skips every
+                    // not-yet-claimed reward in the same set. Observed live (11-07 session,
+                    // reward=46187473 set=50197865): AI declined a potion replacement on a
+                    // full potion belt, the set Gold+Potion+Card completed as Skipped, and
+                    // the pending CardReward was destroyed (later auto-claim attempts threw
+                    // "No native reward set state"). Stable reorder: non-potion buttons keep
+                    // their relative order, potion buttons move to the tail, so a terminal
+                    // potion skip can only ever close an already-fully-claimed set.
+                    int potionButtonCount = 0;
+                    for (int i = 0; i < p2Buttons.Count; i++)
+                    {
+                        if (GetMember(p2Buttons[i], "Reward") as MegaCrit.Sts2.Core.Rewards.PotionReward != null) potionButtonCount++;
+                    }
+                    if (potionButtonCount > 0 && potionButtonCount < p2Buttons.Count)
+                    {
+                        List<object> reorderedButtons = new List<object>(p2Buttons.Count);
+                        List<string> reorderedFingerprints = new List<string>(p2Fingerprints.Count);
+                        for (int i = 0; i < p2Buttons.Count; i++)
+                        {
+                            if (GetMember(p2Buttons[i], "Reward") as MegaCrit.Sts2.Core.Rewards.PotionReward == null)
+                            {
+                                reorderedButtons.Add(p2Buttons[i]);
+                                reorderedFingerprints.Add(p2Fingerprints[i]);
+                            }
+                        }
+                        for (int i = 0; i < p2Buttons.Count; i++)
+                        {
+                            if (GetMember(p2Buttons[i], "Reward") as MegaCrit.Sts2.Core.Rewards.PotionReward != null)
+                            {
+                                reorderedButtons.Add(p2Buttons[i]);
+                                reorderedFingerprints.Add(p2Fingerprints[i]);
+                            }
+                        }
+                        p2Buttons = reorderedButtons;
+                        p2Fingerprints = reorderedFingerprints;
+                        GD.Print(string.Format("[AiTeammate][Flow] reward-claim-order potions-last reordered=True total={0} potions={1}", p2Buttons.Count, potionButtonCount));
+                    }
 
                     GD.Print(string.Format("[AiTeammate][Flow] Auto-claiming {0} P2 rewards serially (native backend)...", p2Buttons.Count));
 
@@ -13613,29 +18804,117 @@ namespace AiTeammate
                         }
 
                         object reward = GetMember(b, "Reward");
-                        Task<bool> completed = WaitForRewardSelection(reward);
                         MethodInfo onRelease = AccessTools.Method(b.GetType(), "OnRelease");
                         if (onRelease == null)
                         {
                             GD.PrintErr("[AiTeammate][Flow] reward-claim-paused reason=OnRelease-unavailable fingerprint=" + p2Fingerprints[i]);
                             continue;
                         }
+
+                                                // Directive #5.45 & #5.63: PotionReward pre-check, owner validation and smart replacement
+                        MegaCrit.Sts2.Core.Rewards.PotionReward p2PotReward = reward as MegaCrit.Sts2.Core.Rewards.PotionReward;
+                        if (p2PotReward != null)
+                        {
+                            ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                            ulong rewardOwner = p2PotReward.Player != null ? p2PotReward.Player.NetId : 0;
+                            if (p2PotReward.Player == null || rewardOwner != p2NetId)
+                            {
+                                GD.PrintErr(string.Format("[AiTeammate][Flow] potion-reward-owner-mismatch-blocked rewardOwner={0} expected={1}", rewardOwner, p2NetId));
+                                continue;
+                            }
+
+                            EnsureP1PotionUiBound("before-p2-potion-claim");
+
+                            int slotCount = p2.MaxPotionCount;
+                            int occupiedCount = 0;
+                            if (p2.PotionSlots != null)
+                            {
+                                slotCount = p2.PotionSlots.Count;
+                                for (int s = 0; s < p2.PotionSlots.Count; s++)
+                                {
+                                    if (p2.PotionSlots[s] != null) occupiedCount++;
+                                }
+                            }
+                            else if (p2.Potions != null)
+                            {
+                                foreach (var pot in p2.Potions) if (pot != null) occupiedCount++;
+                            }
+                            int openSlot = Math.Max(0, slotCount - occupiedCount);
+                            string occupiedIds = p2.PotionSlots != null 
+                                ? string.Join(",", p2.PotionSlots.Where(p => p != null).Select(p => p.Id != null ? p.Id.ToString() : "unknown"))
+                                : "";
+                            string potId = (p2PotReward.Potion != null && p2PotReward.Potion.Id != null) ? p2PotReward.Potion.Id.ToString() : "unknown";
+
+                            GD.Print(string.Format("[AiTeammate][Flow] potion-slots owner=P2 slot-count={0} occupied-count={1} open-slot={2}", slotCount, occupiedCount, openSlot));
+                            GD.Print(string.Format("[AiTeammate][Flow] potion-reward-offer owner=P2 potion={0} open-slot={1}", potId, openSlot));
+                            GD.Print(string.Format("[AiTeammate][Flow] potion-reward-inventory-check rewardOwner=P2 ids=[{0}] open={1} slot-count={2} newPotion={3}",
+                                occupiedIds, openSlot, slotCount, potId));
+
+                            GD.Print(string.Format("[AiTeammate][Flow] potion-reward-route owner=P2 rewardPotion={0} visiblePotionOwner=P1 p2PotionIds=[{1}] p2Open={2}",
+                                potId, occupiedIds, openSlot));
+
+                            bool handled = await TryExecuteP2PotionReplacement(p2PotReward, b as NRewardButton);
+                            EnsureP1PotionUiBound("after-p2-potion-replacement");
+                            AutopilotFuse.MarkResolved("reward-claim", p2Fingerprints[i]);
+                            lock (RewardGateSync) { if (reward != null) RewardSelectionWaiters.Remove(reward); }
+                            continue;
+                        }
+
+                        // Directive #5.64: P2 CardReward MUST use SelectRewardForPlayer backend, NEVER OnRelease!
+                        MegaCrit.Sts2.Core.Rewards.CardReward p2CardReward = reward as MegaCrit.Sts2.Core.Rewards.CardReward;
+                        if (p2CardReward != null)
+                        {
+                            if (!AutoCardRewardEnabled)
+                            {
+                                GD.Print("[AiTeammate][Flow] p2-card-reward-auto-disabled native-manual=true");
+                                continue;
+                            }
+
+                            string rSrc = RewardBackendFlow.DetermineRewardSource(p2CardReward);
+                            bool claimedCard = await RewardBackendFlow.ClaimP2CardRewardBackend(p2CardReward, b as NRewardButton, rSrc);
+                            AutopilotFuse.MarkResolved("reward-claim", p2Fingerprints[i]);
+                            lock (RewardGateSync) { if (reward != null) RewardSelectionWaiters.Remove(reward); }
+                            if (!claimedCard)
+                            {
+                                GD.PrintErr("[AiTeammate][Flow] reward-claim-paused reason=card-backend-claim-failed fingerprint=" + p2Fingerprints[i]);
+                                break;
+                            }
+                            continue;
+                        }
+
                         try
                         {
+                            Task<bool> completed = WaitForRewardSelection(reward);
                             GD.Print("[AiTeammate][Flow] reward-selection-start owner=P2 type=" + (reward != null ? reward.GetType().Name : "unknown") + " fingerprint=" + p2Fingerprints[i]);
                             onRelease.Invoke(b, null);
                             bool confirmed = await completed;
                             if (!confirmed)
                             {
+                                if (p2PotReward != null)
+                                {
+                                    string potId = (p2PotReward.Potion != null && p2PotReward.Potion.Id != null) ? p2PotReward.Potion.Id.ToString() : "unknown";
+                                    GD.PrintErr(string.Format("[AiTeammate][Flow] potion-reward-failed reason=procure-rejected owner=P2 potion={0}", potId));
+                                }
                                 GD.PrintErr("[AiTeammate][Flow] reward-claim-paused reason=backend-not-confirmed fingerprint=" + p2Fingerprints[i]);
-                                continue;
+                                break;
+                            }
+                            if (p2PotReward != null)
+                            {
+                                bool inInventory = p2.PotionSlots != null && p2.PotionSlots.Any(p => p != null && (p == p2PotReward.Potion || (p.Id != null && p2PotReward.Potion != null && p.Id.Equals(p2PotReward.Potion.Id))));
+                                string potId = (p2PotReward.Potion != null && p2PotReward.Potion.Id != null) ? p2PotReward.Potion.Id.ToString() : "unknown";
+                                if (inInventory)
+                                {
+                                    GD.Print(string.Format("[AiTeammate][Flow] potion-reward-applied owner=P2 inventoryConfirmed=true potion={0}", potId));
+                                    GD.Print(string.Format("[AiTeammate][Flow] p2-potion-claim-terminal owner=P2 potion={0} state=claimed inventoryConfirmed=true", potId));
+                                }
+                                EnsureP1PotionUiBound("after-p2-potion-claim");
                             }
                             AutopilotFuse.MarkResolved("reward-claim", p2Fingerprints[i]);
                         }
                         catch (Exception exClaim)
                         {
                             GD.PrintErr("[AiTeammate][Flow] reward button invoke/wait failed: " + exClaim);
-                            continue;
+                            break;
                         }
 
                     }
@@ -13937,17 +19216,91 @@ namespace AiTeammate
 
         public static string LastResolvedRestSiteKey = null;
 
+        // Directive #5.52 Problem A: Semantic mapping for campfire options.
+        // Never map Mend to Heal! Every class name ending in RestSiteOption must not be matched with Contains("rest").
+        public static string GetRestOptionSemantic(object opt)
+        {
+            if (opt == null) return "unknown";
+            string typeName = opt.GetType().Name;
+            if (typeName.IndexOf("HealRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "heal";
+            if (typeName.IndexOf("SmithRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "smith";
+            if (typeName.IndexOf("MendRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "mend";
+            if (typeName.IndexOf("DigRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "dig";
+            if (typeName.IndexOf("LiftRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "lift";
+            if (typeName.IndexOf("TokeRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "toke";
+            if (typeName.IndexOf("RecallRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "recall";
+            if (typeName.IndexOf("CookRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "cook";
+            if (typeName.IndexOf("HatchRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "hatch";
+            if (typeName.IndexOf("CloneRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "clone";
+            if (typeName.IndexOf("KindleRestSiteOption", StringComparison.OrdinalIgnoreCase) >= 0) return "kindle";
+
+            PropertyInfo idProp = AccessTools.Property(opt.GetType(), "OptionId");
+            string optId = (idProp != null && idProp.GetValue(opt, null) != null) ? idProp.GetValue(opt, null).ToString() : null;
+            if (!string.IsNullOrEmpty(optId))
+            {
+                string idLower = optId.ToLowerInvariant();
+                if (idLower == "heal") return "heal";
+                if (idLower == "smith" || idLower == "upgrade") return "smith";
+                if (idLower == "mend") return "mend";
+                if (idLower == "dig") return "dig";
+            }
+
+            return "unknown";
+        }
+
+        // Directive #5.89 T3: bounded rest-site Core probes. One line per siteKey per line-kind, so a
+        // campfire that silently bypasses SpireStrategist is visible in the log instead of invisible.
+        private static string _restProbeKey = null;
+        private static string _restSkipKey = null;
+        private static string _restResultKey = null;
+
+        private static bool SafeStrategistAvailable()
+        {
+            try { return FindLiveSpireStrategistAssembly() != null; } catch { return false; }
+        }
+
+        private static void RestProbe(string siteKey, bool available, int nativeOptions, string semantic)
+        {
+            try
+            {
+                if (_restProbeKey == siteKey) return; _restProbeKey = siteKey;
+                GD.Print("[AiTeammate][Flow] rest-strategist-probe siteKey=" + siteKey + " available=" + available + " nativeOptions=" + nativeOptions + " semantic=" + semantic);
+            }
+            catch { }
+        }
+
+        private static void RestProbeSkipped(string siteKey, string reason)
+        {
+            try
+            {
+                if (_restSkipKey == siteKey) return; _restSkipKey = siteKey;
+                GD.Print("[AiTeammate][Flow] rest-strategist-skipped siteKey=" + siteKey + " reason=" + reason);
+            }
+            catch { }
+        }
+
+        private static void RestProbeResult(string siteKey, string decision, string reason)
+        {
+            try
+            {
+                if (_restResultKey == siteKey) return; _restResultKey = siteKey;
+                GD.Print("[AiTeammate][Flow] rest-strategist-result siteKey=" + siteKey + " decision=" + decision + " reason=" + reason);
+            }
+            catch { }
+        }
+
         public static bool ResolveP2RestSite(object synchronizer, Player p2)
         {
             try
             {
+                // Directive #5.90 T2.2: silent - this fires on every non-rest floor (no synchronizer).
                 if (synchronizer == null || p2 == null) return false;
 
                 IRunState run = GetRunState();
                 int floor = run != null ? run.TotalFloor : 0;
                 string generation = CurrentRunGeneration();
                 string siteKey = generation + "|floor=" + floor + "|p2";
-                if (LastResolvedRestSiteKey == siteKey) return true;
+                if (LastResolvedRestSiteKey == siteKey) { RestProbeSkipped(siteKey, "already-resolved"); return true; }
 
                 MethodInfo getOptionsMethod = AccessTools.Method(synchronizer.GetType(), "GetOptionsForPlayer", new Type[] { typeof(Player) });
 
@@ -13955,6 +19308,9 @@ namespace AiTeammate
                 {
                     FieldInfo restSitesField = AccessTools.Field(synchronizer.GetType(), "_restSites");
                     System.Collections.IList restSites = restSitesField != null ? restSitesField.GetValue(synchronizer) as System.Collections.IList : null;
+                    // Directive #5.90 T2.2: these guards fire on EVERY non-rest floor because the polling
+                    // loop calls ResolveP2RestSite unconditionally. Stay silent here; probes are only
+                    // meaningful once P2 actually has campfire options to resolve.
                     if (restSites == null || restSites.Count == 0) return false;
 
                     int playerIndex = -1;
@@ -14018,6 +19374,8 @@ namespace AiTeammate
 
                 int healIdx = -1;
                 int smithIdx = -1;
+                int mendIdx = -1;
+                int digIdx = -1;
                 for (int i = 0; i < opts.Count; i++)
                 {
                     var opt = opts[i];
@@ -14026,88 +19384,278 @@ namespace AiTeammate
                     bool isEn = enProp != null ? (bool)enProp.GetValue(opt, null) : true;
                     if (!isEn) continue;
 
-                    string optName = opt.GetType().Name.ToLowerInvariant();
-                    PropertyInfo idProp = AccessTools.Property(opt.GetType(), "OptionId");
-                    string optId = idProp != null && idProp.GetValue(opt, null) != null ? idProp.GetValue(opt, null).ToString().ToLowerInvariant() : "";
-                    string combined = optName + " " + optId;
-
-                    if (combined.Contains("heal") || combined.Contains("rest")) healIdx = i;
-                    if (combined.Contains("smith") || combined.Contains("upgrade")) smithIdx = i;
+                    string sem = GetRestOptionSemantic(opt);
+                    if (sem == "heal") healIdx = i;
+                    else if (sem == "smith") smithIdx = i;
+                    else if (sem == "mend") mendIdx = i;
+                    else if (sem == "dig") digIdx = i;
                 }
 
                 int chosenIdx = -1;
                 string pickAction = "heal";
-                string reason = "rule-hp-threshold";
-                string source = "rule";
+                string reason = null;
+                string source = null;
 
-                if (preferHeal)
+                // Directive #5.46 T0: Call live SpireStrategist Policy.Evaluate
+                Assembly liveAsm = FindLiveSpireStrategistAssembly();
+                string strategistDecision = null;
+                string strategistReason = null;
+                // Directive #5.89 T3: probe every guard, so "Core never ran at this campfire" is diagnosable.
+                string coreSkip = null;
+                string semantic = (healIdx >= 0 && smithIdx >= 0) ? "both" : (healIdx >= 0 ? "heal" : (smithIdx >= 0 ? "smith" : "none"));
+                RestProbe(siteKey, liveAsm != null, opts.Count, semantic);
+                if (liveAsm == null) coreSkip = "not-available";
+                if (liveAsm != null)
                 {
-                    if (healIdx >= 0) { chosenIdx = healIdx; pickAction = "heal"; }
-                    else if (smithIdx >= 0 && hasUpgradableCard) { chosenIdx = smithIdx; pickAction = "smith"; }
+                    try
+                    {
+                        Type readerType = liveAsm.GetType("SpireStrategist.Mod.SnapshotReader");
+                        Type policyType = liveAsm.GetType("SpireStrategist.Core.Policy");
+                        Type decisionOptionType = liveAsm.GetType("SpireStrategist.Core.DecisionOption");
+
+                        // Directive #5.90 T2.1: Policy.Evaluate is an INSTANCE method, not static. The old
+                        // GetMethod("Evaluate", Public|Static) always returned null, so every campfire
+                        // logged rest-strategist-skipped reason=signature-missing and fell back to the
+                        // hp-threshold rule. Resolve it exactly like EvaluateP2CombatHandCards does.
+                        MethodInfo readMethod = readerType != null
+                            ? readerType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static).FirstOrDefault(m => m.Name == "Read" && m.GetParameters().Length == 2)
+                            : null;
+                        object policy = null;
+                        MethodInfo evalMethod = null;
+                        if (policyType != null)
+                        {
+                            policy = TryGetStrategistPolicy(liveAsm) ?? CreatePolicyInstance(policyType);
+                            evalMethod = policyType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).FirstOrDefault(m => m.Name == "Evaluate" && m.GetParameters().Length == 2);
+                        }
+
+                        if (readMethod != null && evalMethod != null && decisionOptionType != null && policy != null)
+                        {
+                            object snapshot = readMethod.Invoke(null, new object[] { run, p2 });
+                            if (snapshot == null) coreSkip = "snapshot-null";
+                            if (snapshot != null)
+                            {
+                                // Fix SpireStrategist multiplayer constraint: PlayerCount == 1
+                                FieldInfo pcField = snapshot.GetType().GetField("<PlayerCount>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic);
+                                if (pcField != null) pcField.SetValue(snapshot, 1);
+
+                                // Construct DecisionOptions list
+                                Type listType = typeof(List<>).MakeGenericType(decisionOptionType);
+                                System.Collections.IList decisionOptions = (System.Collections.IList)Activator.CreateInstance(listType);
+
+                                // DecisionOption(string Key, string Name, string Kind, bool Enabled, CardSnapshot Card, double HealAmount, int SmithCount, double? EffectValue)
+                                ConstructorInfo optCtor = decisionOptionType.GetConstructors()[0];
+
+                                int healAmount = (int)Math.Round(maxHp * 0.30);
+                                object healOpt = optCtor.Invoke(new object[] { "heal", "Heal", "heal", healIdx >= 0, null, (double)healAmount, 1, null });
+                                object smithOpt = optCtor.Invoke(new object[] { "smith", "Smith", "smith", smithIdx >= 0 && hasUpgradableCard, null, 0.0, 1, null });
+
+                                decisionOptions.Add(healOpt);
+                                decisionOptions.Add(smithOpt);
+
+                                // Directive #5.90 T2.1: pass the policy INSTANCE (Evaluate is not static).
+                                object evalResult = evalMethod.Invoke(policy, new object[] { snapshot, decisionOptions });
+                                if (evalResult == null) coreSkip = "eval-null";
+                                if (evalResult != null)
+                                {
+                                    PropertyInfo recKeyProp = evalResult.GetType().GetProperty("RecommendedKey");
+                                    PropertyInfo recReasonProp = evalResult.GetType().GetProperty("RecommendationReason") ?? evalResult.GetType().GetProperty("Summary");
+                                    strategistDecision = recKeyProp != null ? recKeyProp.GetValue(evalResult, null) as string : null;
+                                    strategistReason = recReasonProp != null ? recReasonProp.GetValue(evalResult, null) as string : null;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            coreSkip = (readerType == null || policyType == null || decisionOptionType == null) ? "types-missing"
+                                     : (policy == null ? "policy-instance-null" : "signature-missing");
+                        }
+                    }
+                    catch (Exception exStrategist)
+                    {
+                        coreSkip = "exception-" + exStrategist.GetType().Name;
+                        GD.PrintErr("[AiTeammate][Flow] rest-strategist-failed exception=" + exStrategist);
+                    }
                 }
-                else
+
+                if (coreSkip != null) RestProbeSkipped(siteKey, coreSkip);
+                else RestProbeResult(siteKey, string.IsNullOrEmpty(strategistDecision) ? "null" : strategistDecision.ToLowerInvariant(), strategistReason ?? "no-recommendation");
+
+                if (!string.IsNullOrEmpty(strategistDecision))
                 {
-                    if (smithIdx >= 0 && hasUpgradableCard) { chosenIdx = smithIdx; pickAction = "smith"; }
-                    else if (healIdx >= 0)
+                    source = "spire-strategist";
+                    pickAction = strategistDecision.ToLowerInvariant();
+                    reason = strategistReason ?? ("policy-" + pickAction);
+
+                    if (pickAction == "smith" && smithIdx >= 0)
+                    {
+                        chosenIdx = smithIdx;
+                    }
+                    else if (pickAction == "heal" && healIdx >= 0)
                     {
                         chosenIdx = healIdx;
-                        pickAction = "heal";
-                        reason = "rest-fallback";
-                        source = "fallback";
-                        GD.Print("[AiTeammate][Flow] rest-fallback");
                     }
                 }
 
                 if (chosenIdx < 0)
                 {
-                    for (int i = 0; i < opts.Count; i++)
+                    source = "fallback";
+                    reason = "fallback-hp-threshold";
+                    if (preferHeal)
                     {
-                        var opt = opts[i];
-                        if (opt == null) continue;
-                        PropertyInfo enProp = AccessTools.Property(opt.GetType(), "IsEnabled");
-                        bool isEn = enProp != null ? (bool)enProp.GetValue(opt, null) : true;
-                        if (isEn) { chosenIdx = i; pickAction = "opt_" + i; break; }
+                        if (healIdx >= 0) { chosenIdx = healIdx; pickAction = "heal"; }
+                        else if (smithIdx >= 0 && hasUpgradableCard) { chosenIdx = smithIdx; pickAction = "smith"; }
+                    }
+                    else
+                    {
+                        if (smithIdx >= 0 && hasUpgradableCard) { chosenIdx = smithIdx; pickAction = "smith"; }
+                        else if (healIdx >= 0)
+                        {
+                            chosenIdx = healIdx;
+                            pickAction = "heal";
+                            reason = "rest-fallback";
+                        }
                     }
                 }
 
-                if (chosenIdx >= 0)
+                if (chosenIdx < 0)
                 {
-                    AutopilotFuse.MarkResolved("rest", fingerprint);
-                    LastResolvedRestSiteKey = siteKey;
-                    GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=rest pick={0} reason={1} source={2} idx={3}", pickAction, reason, source, chosenIdx));
+                    if (healIdx >= 0) { chosenIdx = healIdx; pickAction = "heal"; source = "safe-fallback"; }
+                    else if (smithIdx >= 0) { chosenIdx = smithIdx; pickAction = "smith"; source = "safe-fallback"; }
+                    else if (digIdx >= 0) { chosenIdx = digIdx; pickAction = "dig"; source = "safe-fallback"; }
+                }
+
+                // Directive #5.52 Problem A: Validated execution with limited retry budget (max 2 attempts)
+                int maxAttempts = 2;
+                bool successfullyChosen = false;
+                string choiceId = string.Format("rest:{0}:{1}:{2}", floor, p2.NetId, DateTime.UtcNow.Ticks);
+
+                for (int attempt = 0; attempt < maxAttempts; attempt++)
+                {
+                    if (chosenIdx < 0 || chosenIdx >= opts.Count)
+                    {
+                        GD.PrintErr(string.Format("[AiTeammate][Flow] p2-rest-choice-invalid player={0} semantic_choice={1} local_index={2} option_type=null option_count={3} choice_id={4} reason=index-out-of-bounds",
+                            p2.NetId, pickAction, chosenIdx, opts.Count, choiceId));
+                        if (attempt == 0)
+                        {
+                            if (pickAction == "smith" && healIdx >= 0) { chosenIdx = healIdx; pickAction = "heal"; reason = "fallback-to-heal"; continue; }
+                            if (pickAction == "heal" && smithIdx >= 0 && hasUpgradableCard) { chosenIdx = smithIdx; pickAction = "smith"; reason = "fallback-to-smith"; continue; }
+                        }
+                        break;
+                    }
+
+                    object chosenOpt = opts[chosenIdx];
+                    string actualSemantic = GetRestOptionSemantic(chosenOpt);
+                    string optType = chosenOpt != null ? chosenOpt.GetType().Name : "null";
+
+                    // Pre-call validation 1: semantic matches option type
+                    if (actualSemantic != pickAction)
+                    {
+                        GD.PrintErr(string.Format("[AiTeammate][Flow] p2-rest-choice-validation-failed player={0} semantic_choice={1} local_index={2} option_type={3} option_count={4} choice_id={5} reason=semantic-mismatch(actual={6})",
+                            p2.NetId, pickAction, chosenIdx, optType, opts.Count, choiceId, actualSemantic));
+                        if (attempt == 0)
+                        {
+                            if (pickAction == "smith" && healIdx >= 0) { chosenIdx = healIdx; pickAction = "heal"; reason = "fallback-to-heal"; continue; }
+                            if (pickAction == "heal" && smithIdx >= 0 && hasUpgradableCard) { chosenIdx = smithIdx; pickAction = "smith"; reason = "fallback-to-smith"; continue; }
+                        }
+                        break;
+                    }
+
+                    // Pre-call validation 2: option not null
+                    if (chosenOpt == null)
+                    {
+                        GD.PrintErr(string.Format("[AiTeammate][Flow] p2-rest-choice-validation-failed player={0} semantic_choice={1} local_index={2} option_type={3} option_count={4} choice_id={5} reason=option-null",
+                            p2.NetId, pickAction, chosenIdx, optType, opts.Count, choiceId));
+                        break;
+                    }
+
+                    // Pre-call validation 3: option belongs to P2
+                    PropertyInfo ownerProp = AccessTools.Property(chosenOpt.GetType(), "Owner");
+                    if (ownerProp != null)
+                    {
+                        Player optOwner = ownerProp.GetValue(chosenOpt, null) as Player;
+                        if (optOwner != null && optOwner.NetId != p2.NetId)
+                        {
+                            GD.PrintErr(string.Format("[AiTeammate][Flow] p2-rest-choice-validation-failed player={0} semantic_choice={1} local_index={2} option_type={3} option_count={4} choice_id={5} reason=owner-mismatch(optOwner={6})",
+                                p2.NetId, pickAction, chosenIdx, optType, opts.Count, choiceId, optOwner.NetId));
+                            break;
+                        }
+                    }
 
                     MethodInfo chooseMethod = AccessTools.Method(synchronizer.GetType(), "ChooseOption", new Type[] { typeof(Player), typeof(int) });
-                    if (chooseMethod != null)
+                    if (chooseMethod == null)
                     {
-                        ulong? prevNetId = LocalContext.NetId;
-                        try
+                        GD.PrintErr("[AiTeammate][Flow] ChooseOption method not found on synchronizer");
+                        break;
+                    }
+
+                    ulong? prevNetId = LocalContext.NetId;
+                    try
+                    {
+                        LocalContext.NetId = p2.NetId;
+                        object res = chooseMethod.Invoke(synchronizer, new object[] { p2, chosenIdx });
+                        Task task = res as Task;
+                        if (task != null)
                         {
-                            LocalContext.NetId = p2.NetId;
-                            object res = chooseMethod.Invoke(synchronizer, new object[] { p2, chosenIdx });
-                            Task task = res as Task;
-                            if (task != null)
+                            MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(task);
+                        }
+                        successfullyChosen = true;
+                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=rest pick={0} reason={1} source={2} idx={3} player={4} semantic_choice={0} local_index={3} option_type={5} option_count={6} choice_id={7}",
+                            pickAction, reason, source, chosenIdx, p2.NetId, optType, opts.Count, choiceId));
+                        AutopilotFuse.MarkResolved("rest", fingerprint);
+                        LastResolvedRestSiteKey = siteKey;
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        TargetInvocationException tie = ex as TargetInvocationException;
+                        Exception actualEx = (tie != null && tie.InnerException != null) ? tie.InnerException : ex;
+                        GD.PrintErr(string.Format("[AiTeammate][Flow] p2-rest-choice-exception player={0} semantic_choice={1} local_index={2} option_type={3} option_count={4} choice_id={5} exception={6}",
+                            p2.NetId, pickAction, chosenIdx, optType, opts.Count, choiceId, actualEx));
+
+                        if (attempt == 0)
+                        {
+                            if (pickAction == "smith" && healIdx >= 0)
                             {
-                                MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(task);
+                                chosenIdx = healIdx;
+                                pickAction = "heal";
+                                reason = "exception-recovery-to-heal";
+                                continue;
+                            }
+                            else if (pickAction == "heal" && smithIdx >= 0 && hasUpgradableCard)
+                            {
+                                chosenIdx = smithIdx;
+                                pickAction = "smith";
+                                reason = "exception-recovery-to-smith";
+                                continue;
                             }
                         }
-                        finally
-                        {
-                            LocalContext.NetId = prevNetId;
-                        }
-
-                        ulong p1Id = TurnCoordinator.GetPlayer1NetId();
-                        ulong actualId = TurnFlowPatches.GetDraCurrentControlledPlayerId();
-                        string actualName = (actualId == p1Id || (p1Id != 0 && actualId == 0)) ? "P1" : actualId.ToString();
-                        GD.Print(string.Format("[AiTeammate][Flow] rest-foreground-assert expected=P1 actual={0}", actualName));
-                        return true;
+                        break;
+                    }
+                    finally
+                    {
+                        LocalContext.NetId = prevNetId;
                     }
                 }
+
+                if (!successfullyChosen)
+                {
+                    GD.PrintErr(string.Format("[AiTeammate][Flow] rest-choice-failed-fuse-tripped player={0} semantic_choice={1} choice_id={2} attempts_budget_exhausted=true",
+                        p2.NetId, pickAction, choiceId));
+                    AutopilotFuse.TripCircuit("rest", fingerprint);
+                    // Requirement 4: DO NOT advance room, DO NOT leave campfire!
+                    return false;
+                }
+
+                ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                ulong actualId = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                string actualName = (actualId == p1Id || (p1Id != 0 && actualId == 0)) ? "P1" : actualId.ToString();
+                GD.Print(string.Format("[AiTeammate][Flow] rest-foreground-assert expected=P1 actual={0}", actualName));
+                return true;
             }
             catch (Exception ex)
             {
                 GD.PrintErr("[AiTeammate][Flow] ResolveP2RestSite exception: " + ex);
-            }
-            return false;
+            }            return false;
         }
 
         // R2-5: one offer/resolved pair per pending event; extra hook call sites within the TTL
@@ -14169,6 +19717,297 @@ namespace AiTeammate
         }
 
 
+
+        // Directive #5.43 T1: Unified SpireStrategist Event Recommendation Evaluation
+        public static bool TryEvaluateEventViaStrategist(Player p2, object p2Event, System.Collections.IList curOpts, bool isAncient, out int chosenIdx, out string pickId, out string source, out string reason)
+        {
+            chosenIdx = -1;
+            pickId = "0";
+            source = "core";
+            reason = "event-policy";
+
+            if (p2 == null || curOpts == null || curOpts.Count == 0) return false;
+
+            try
+            {
+                Assembly liveAsm = FindLiveSpireStrategistAssembly();
+                if (liveAsm == null)
+                {
+                    Type fallbackPolicy = AccessTools.TypeByName("SpireStrategist.Core.EventPolicy");
+                    if (fallbackPolicy != null) liveAsm = fallbackPolicy.Assembly;
+                }
+                if (liveAsm == null)
+                {
+                    if (!EventStrategistMissing)
+                    {
+                        GD.PrintErr("[AiTeammate][Event] strategist-eval-error: SpireStrategist assembly not found");
+                    }
+                    EventStrategistMissing = true;
+                    return false;
+                }
+
+                Type snapReaderType = liveAsm.GetType("SpireStrategist.Mod.SnapshotReader");
+                Type eventAdapterType = liveAsm.GetType("SpireStrategist.Mod.EventAdapter");
+                Type eventPolicyType = liveAsm.GetType("SpireStrategist.Core.EventPolicy");
+                Type eventChoiceType = liveAsm.GetType("SpireStrategist.Core.EventChoice");
+
+                if (snapReaderType == null || eventAdapterType == null || eventPolicyType == null || eventChoiceType == null)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: Required types missing in SpireStrategist assembly");
+                    return false;
+                }
+
+                IRunState run = GetRunState();
+                if (run == null)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: IRunState is null");
+                    return false;
+                }
+
+                MethodInfo readMethod = null;
+                foreach (var m in snapReaderType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                {
+                    if (m.Name == "Read" && m.GetParameters().Length == 2)
+                    {
+                        readMethod = m;
+                        break;
+                    }
+                }
+                if (readMethod == null)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: SnapshotReader.Read method missing");
+                    return false;
+                }
+
+                object snapshot = readMethod.Invoke(null, new object[] { run, p2 });
+                if (snapshot == null)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: SnapshotReader.Read returned null");
+                    return false;
+                }
+
+                FieldInfo pcField = AccessTools.Field(snapshot.GetType(), "<PlayerCount>k__BackingField");
+                if (pcField != null) pcField.SetValue(snapshot, 1);
+
+                Dictionary<string, double> vars = new Dictionary<string, double>();
+                try
+                {
+                    if (p2Event != null)
+                    {
+                        PropertyInfo dvProp = AccessTools.Property(p2Event.GetType(), "DynamicVars");
+                        var dvDict = dvProp != null ? dvProp.GetValue(p2Event, null) as System.Collections.IEnumerable : null;
+                        if (dvDict != null)
+                        {
+                            foreach (object kvp in dvDict)
+                            {
+                                if (kvp == null) continue;
+                                PropertyInfo keyProp = AccessTools.Property(kvp.GetType(), "Key");
+                                PropertyInfo valProp = AccessTools.Property(kvp.GetType(), "Value");
+                                string k = keyProp != null ? keyProp.GetValue(kvp, null) as string : null;
+                                object vObj = valProp != null ? valProp.GetValue(kvp, null) : null;
+                                if (!string.IsNullOrEmpty(k) && vObj != null)
+                                {
+                                    double baseVal = 0.0;
+                                    PropertyInfo bvProp = AccessTools.Property(vObj.GetType(), "BaseValue");
+                                    if (bvProp != null)
+                                    {
+                                        object bv = bvProp.GetValue(vObj, null);
+                                        if (bv != null)
+                                        {
+                                            try { baseVal = Convert.ToDouble(bv); } catch { }
+                                        }
+                                    }
+                                    vars[k] = baseVal;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                MethodInfo describeMethod = null;
+                foreach (var m in eventAdapterType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                {
+                    if (m.Name == "Describe" && m.GetParameters().Length == 4)
+                    {
+                        describeMethod = m;
+                        break;
+                    }
+                }
+
+                Type listType = typeof(List<>).MakeGenericType(eventChoiceType);
+                System.Collections.IList choicesList = Activator.CreateInstance(listType) as System.Collections.IList;
+                PropertyInfo choiceKeyProp = AccessTools.Property(eventChoiceType, "Key");
+
+                for (int i = 0; i < curOpts.Count; i++)
+                {
+                    var opt = curOpts[i];
+                    if (opt == null) continue;
+
+                    object choiceObj = null;
+                    if (describeMethod != null && p2Event != null)
+                    {
+                        try
+                        {
+                            choiceObj = describeMethod.Invoke(null, new object[] { p2Event, opt, snapshot, vars });
+                        }
+                        catch (Exception exDesc)
+                        {
+                            GD.PrintErr("[AiTeammate][Event] EventAdapter.Describe error: " + exDesc.Message);
+                        }
+                    }
+
+                    if (choiceObj == null)
+                    {
+                        string title = GetOptionTitle(opt);
+                        bool locked = GetOptionIsLocked(opt);
+                        choiceObj = CreateEventChoice(eventChoiceType, i.ToString(), title ?? ("option_" + i), !locked);
+                    }
+
+                    if (choiceObj != null)
+                    {
+                        if (choiceKeyProp != null && choiceKeyProp.CanWrite)
+                        {
+                            choiceKeyProp.SetValue(choiceObj, i.ToString(), null);
+                        }
+                        choicesList.Add(choiceObj);
+                    }
+                }
+
+                MethodInfo evalMethod = null;
+                foreach (var m in eventPolicyType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                {
+                    if (m.Name == "Evaluate" && m.GetParameters().Length == 2)
+                    {
+                        evalMethod = m;
+                        break;
+                    }
+                }
+                if (evalMethod == null)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: EventPolicy.Evaluate method missing");
+                    return false;
+                }
+
+                object evalResult = evalMethod.Invoke(null, new object[] { snapshot, choicesList });
+                if (evalResult == null)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: EventPolicy.Evaluate returned null");
+                    return false;
+                }
+
+                PropertyInfo recKeyProp = AccessTools.Property(evalResult.GetType(), "RecommendedKey");
+                string recKey = recKeyProp != null ? recKeyProp.GetValue(evalResult, null) as string : null;
+
+                PropertyInfo optsProp = AccessTools.Property(evalResult.GetType(), "Options");
+                var optScores = optsProp != null ? optsProp.GetValue(evalResult, null) as System.Collections.IEnumerable : null;
+
+                string optSummary = "";
+                if (optScores != null)
+                {
+                    foreach (object os in optScores)
+                    {
+                        if (os == null) continue;
+                        PropertyInfo kProp = AccessTools.Property(os.GetType(), "Key");
+                        PropertyInfo sProp = AccessTools.Property(os.GetType(), "Score");
+                        PropertyInfo eProp = AccessTools.Property(os.GetType(), "Enabled");
+                        object kVal = kProp != null ? kProp.GetValue(os, null) : null;
+                        object sVal = sProp != null ? sProp.GetValue(os, null) : null;
+                        object eVal = eProp != null ? eProp.GetValue(os, null) : null;
+                        if (optSummary.Length > 0) optSummary += ", ";
+                        optSummary += string.Format("[key={0} score={1} enabled={2}]", kVal, sVal, eVal);
+                    }
+                }
+                GD.Print(string.Format("[AiTeammate][Event] strategist-eval-options: {0}", optSummary));
+
+                int decIdx = -1;
+                if (!string.IsNullOrEmpty(recKey))
+                {
+                    if (!int.TryParse(recKey, out decIdx))
+                    {
+                        for (int i = 0; i < curOpts.Count; i++)
+                        {
+                            if (string.Equals(GetOptionTextKey(curOpts[i]), recKey, StringComparison.OrdinalIgnoreCase))
+                            {
+                                decIdx = i;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (decIdx < 0 || decIdx >= curOpts.Count)
+                {
+                    GD.PrintErr("[AiTeammate][Event] strategist-eval-error: recommendedKey '" + recKey + "' could not be resolved to valid index (count=" + curOpts.Count + ")");
+                    return false;
+                }
+
+                if (isAncient)
+                {
+                    var chosenOpt = curOpts[decIdx];
+                    string tStr = GetOptionTitle(chosenOpt);
+                    string dStr = GetOptionDescription(chosenOpt);
+                    string tkStr = GetOptionTextKey(chosenOpt);
+                    string full = ((tStr ?? "") + " " + (dStr ?? "") + " " + (tkStr ?? "")).ToLowerInvariant();
+                    if (full.Contains("massive_scroll") || full.Contains("巨大卷轴"))
+                    {
+                        GD.Print("[AiTeammate][Event] massive_scroll vetoed for P2");
+                        int nextBestIdx = -1;
+                        double bestScore = double.MinValue;
+                        if (optScores != null)
+                        {
+                            foreach (object os in optScores)
+                            {
+                                if (os == null) continue;
+                                PropertyInfo kProp = AccessTools.Property(os.GetType(), "Key");
+                                PropertyInfo sProp = AccessTools.Property(os.GetType(), "Score");
+                                PropertyInfo eProp = AccessTools.Property(os.GetType(), "Enabled");
+                                string kStr = kProp != null ? kProp.GetValue(os, null) as string : null;
+                                bool enabled = eProp != null && (bool)eProp.GetValue(os, null);
+                                double sc = sProp != null ? Convert.ToDouble(sProp.GetValue(os, null)) : double.MinValue;
+
+                                int candIdx;
+                                if (enabled && int.TryParse(kStr, out candIdx) && candIdx >= 0 && candIdx < curOpts.Count)
+                                {
+                                    var candOpt = curOpts[candIdx];
+                                    string candT = GetOptionTitle(candOpt);
+                                    string candD = GetOptionDescription(candOpt);
+                                    string candTK = GetOptionTextKey(candOpt);
+                                    string candFull = ((candT ?? "") + " " + (candD ?? "") + " " + (candTK ?? "")).ToLowerInvariant();
+                                    if (!candFull.Contains("massive_scroll") && !candFull.Contains("巨大卷轴"))
+                                    {
+                                        if (sc > bestScore)
+                                        {
+                                            bestScore = sc;
+                                            nextBestIdx = candIdx;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        decIdx = nextBestIdx;
+                        if (decIdx < 0)
+                        {
+                            GD.Print("[AiTeammate][Event] No non-vetoed option in strategist evaluation, falling back to ancient heuristic");
+                            return false;
+                        }
+                    }
+                }
+
+                chosenIdx = decIdx;
+                pickId = decIdx.ToString();
+                source = "core";
+                reason = "event-policy";
+                string eventName = p2Event != null ? p2Event.GetType().Name : "event";
+                GD.Print(string.Format("[AiTeammate][Event] strategist-eval event={0} recommendedIdx={1} key={2}", eventName, decIdx, recKey));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Event] strategist-eval-error: " + ex.Message);
+                return false;
+            }
+        }
 
         public static object CreateEventChoice(Type eventChoiceType, string key, string name, bool enabled)
 
@@ -15156,404 +20995,651 @@ namespace AiTeammate
 
 
         public static bool ResolveP2PendingEvent(object synchronizer, Player p2)
-
         {
-
             try
-
             {
-
                 if (synchronizer == null || p2 == null) return false;
+                if (P2EventSubmitInProgress) return false;
 
-                if (FlowCoordinator.IsSubPageManualInteracting) return false;
+                if (!TurnCoordinator.CheckAndRecoverRunIdentity("ResolveP2PendingEvent"))
+                {
+                    if (ShouldLogEventController("p2-event-resolve-blocked", "identity-drift"))
+                        GD.Print("[AiTeammate][Flow] p2-event-resolve-blocked reason=identity-drift-recovering-to-p1");
+                    return false;
+                }
 
-                if (TurnCoordinator.IsEnteringRoom) return false; // Directive #5.14 T2: Event resolver silent during room enter window
-
-
+                if (TurnCoordinator.IsEnteringRoom) return false;
 
                 PropertyInfo isSharedProp = AccessTools.Property(synchronizer.GetType(), "IsShared");
-
-                bool isShared = isSharedProp != null && (bool)isSharedProp.GetValue(synchronizer, null);
-
-                if (isShared)
-
+                // Directive #5.85 (Task 4): EventSynchronizer.IsShared throws
+                // "Event is not in progress!" while EventRoom.Enter finishes preloading and
+                // before BeginEvent runs. That is a normal transient window, not a failure:
+                // return false and let the next tick retry instead of escalating to FailedOpen.
+                bool isShared = false;
+                try
                 {
-
-                    GD.Print("[AiTeammate][Flow] shared-event-auto-proxied");
-
+                    isShared = isSharedProp != null && (bool)isSharedProp.GetValue(synchronizer, null);
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+                if (isShared)
+                {
+                    if (ShouldLogEventController("shared-event-auto-proxied", "shared")) GD.Print("[AiTeammate][Flow] shared-event-auto-proxied");
                     return true;
-
                 }
 
+                string generation = CurrentRunGeneration();
+                object p2Event = FindP2EventForResolver(synchronizer, p2);
 
-
-                PropertyInfo eventsProp = AccessTools.Property(synchronizer.GetType(), "Events");
-
-                var events = eventsProp != null ? eventsProp.GetValue(synchronizer, null) as System.Collections.IEnumerable : null;
-
-                if (events == null) return false;
-
-
-
-                object p2Event = null;
-
-                foreach (var ev in events)
-
+                if (p2Event == null)
                 {
+                    bool hadEvent = P2EventRef != null || P2EventState != P2EventMachineState.Idle;
+                    if (!hadEvent) return false;
 
-                    if (ev == null) continue;
+                    bool inFlight = P2EventState == P2EventMachineState.Submitted || P2EventState == P2EventMachineState.WaitingSubPage;
+                    bool taskDone = P2EventPendingTask == null || P2EventPendingTask.IsCompleted;
+                    bool chosen = P2EventChosenOption != null && GetOptionWasChosen(P2EventChosenOption);
 
-                    PropertyInfo ownerProp = AccessTools.Property(ev.GetType(), "Owner");
-
-                    Player pl = ownerProp != null ? ownerProp.GetValue(ev, null) as Player : null;
-
-                    if (pl != null && (pl == p2 || pl.NetId == p2.NetId || pl.NetId == TurnCoordinator.GetPlayer2NetId()))
-
+                    if (inFlight && !taskDone && !chosen)
                     {
-
-                        p2Event = ev;
-
-                        break;
-
+                        AbortP2Event(p2, "event-object-lost");
+                        ResetP2EventMachine();
+                        return true;
                     }
 
+                    if (P2EventState == P2EventMachineState.PendingInitial && P2EventSubmitCount == 0)
+                    {
+                        ResetP2EventMachine();
+                        return false;
+                    }
+
+                    string goneFp = P2EventFingerprint ?? P2EventLastSubmittedFingerprint ?? "event-object-gone";
+                    CompleteP2Event(p2, goneFp, "event-object-gone");
+                    ResetP2EventMachine();
+                    return false;
                 }
-
-
-
-                if (p2Event == null) return false;
-
-
-
-                PropertyInfo isFinProp = AccessTools.Property(p2Event.GetType(), "IsFinished");
-
-                bool isFin = isFinProp != null && (bool)isFinProp.GetValue(p2Event, null);
-
-                if (isFin)
-
-                {
-
-                    FlowCoordinator.IsSubPageManualInteracting = false;
-
-                    return true;
-
-                }
-
-
-
-                // Directive #5.12 H6: Distinguish "sub-page open" from "unconsumed offer":
-
-                // If P2 has a pending choice in flight (e.g. CardSelectCmd subpage open),
-
-                // do NOT re-offer the parent event, and do NOT count towards fuse offers!
-
-                if (TurnCoordinator.P2PendingChoiceCount > 0)
-
-                {
-
-                    GD.Print(string.Format("[AiTeammate][Flow] event-choice-deferred: P2 has pending choice in flight (count={0}), deferring probe without fuse count", TurnCoordinator.P2PendingChoiceCount));
-
-                    return true;
-
-                }
-
-
 
                 string eventId = GetEventIdentity(p2Event);
-                FlowCoordinator.CurrentEventId = eventId;
+                if (P2EventRef == null || !Object.ReferenceEquals(P2EventRef, p2Event) || !string.Equals(P2EventId, eventId, StringComparison.Ordinal))
+                {
+                    bool oldInFlight = P2EventState == P2EventMachineState.Submitted || P2EventState == P2EventMachineState.WaitingSubPage || P2EventState == P2EventMachineState.PendingNextChoice;
+                    if (oldInFlight)
+                    {
+                        GD.Print("[AiTeammate][Event] event-choice-abort owner=P2 reason=event-replaced");
+                        ReleaseP2EventGates(p2, "event-replaced");
+                    }
+                    StartP2EventMachine(p2Event, eventId, generation);
+                }
+                P2EventRef = p2Event;
+                CurrentEventId = eventId;
 
-                bool isAncient = p2Event is MegaCrit.Sts2.Core.Models.AncientEventModel ||
+                bool isFin = GetEventBoolProperty(p2Event, "IsFinished");
+                IList curOpts = GetEventOptions(p2Event);
+                int optionCount = curOpts != null ? curOpts.Count : 0;
+                string optionsFp = ComputeOptionsFingerprint(curOpts);
+                int pageBefore = P2EventPageOrdinal;
+                string observedFp = BuildP2EventFingerprint(p2, generation, eventId, pageBefore, curOpts);
 
-                                 (p2Event.GetType().Name.Contains("Ancient"));
+                if (isFin)
+                {
+                    CompleteP2Event(p2, observedFp, "native-IsFinished");
+                    return true;
+                }
 
+                if (P2EventState == P2EventMachineState.Completed) return false;
+
+                if (FlowCoordinator.IsSubPageManualInteracting && P2EventState != P2EventMachineState.WaitingSubPage) return false;
+
+                if (P2EventState == P2EventMachineState.FailedOpen)
+                {
+                    return false;
+                }
+
+                if (P2EventState == P2EventMachineState.WaitingSubPage)
+                {
+                    bool subStillOpen = IsP2EventSubChoiceInFlight(p2);
+                    bool taskStillRunning = P2EventPendingTask != null && !P2EventPendingTask.IsCompleted;
+                    if (subStillOpen || taskStillRunning)
+                    {
+                        double subElapsed = P2EventSubChoiceTime == DateTime.MinValue ? 0.0 : (DateTime.UtcNow - P2EventSubChoiceTime).TotalSeconds;
+                        if (subElapsed > P2EventSubChoiceTimeoutSeconds)
+                        {
+                            AbortP2Event(p2, "subchoice-timeout");
+                            return true;
+                        }
+                        return true;
+                    }
+
+                    if (GetEventBoolProperty(p2Event, "IsFinished"))
+                    {
+                        CompleteP2Event(p2, BuildP2EventFingerprint(p2, generation, eventId, pageBefore, curOpts), "native-IsFinished-after-subchoice");
+                        return true;
+                    }
+
+                    bool subOptionsChanged = !string.Equals(optionsFp, P2EventLastOptionsFingerprint, StringComparison.Ordinal);
+                    bool subCountChanged = optionCount != P2EventLastOptionCount;
+                    P2EventPageOrdinal++;
+                    CurrentEventPage = P2EventPageOrdinal;
+                    RecordP2EventUsedIndex(ComputeOptionsTextKeys(curOpts), P2EventChosenIndex);
+                    GD.Print(string.Format("[AiTeammate][Event] event-choice-observed owner=P2 page={0} optionCount={1} optionsChanged={2} isFinished={3} nativeWasChosen={4} subChoice={5}",
+                        pageBefore, optionCount, subOptionsChanged || subCountChanged, false, P2EventChosenOption != null && GetOptionWasChosen(P2EventChosenOption), subStillOpen));
+                    LogP2EventChoiceResolved(p2, "subchoice-completed");
+                    P2EventEmptySince = DateTime.MinValue;
+                    P2EventSubmitTime = DateTime.UtcNow;
+                    string nextFp = BuildP2EventFingerprint(p2, generation, eventId, P2EventPageOrdinal, curOpts);
+                    SetP2EventState(P2EventMachineState.PendingNextChoice, nextFp);
+                    return true;
+                }
+
+                if (P2EventState == P2EventMachineState.Submitted)
+                {
+                    bool taskCaptured = P2EventPendingTask != null;
+                    bool taskDone = taskCaptured && P2EventPendingTask.IsCompleted;
+                    bool wasChosen = P2EventChosenOption != null && GetOptionWasChosen(P2EventChosenOption);
+                    bool subOpen = IsP2EventSubChoiceInFlight(p2);
+                    bool optionsChanged = !string.Equals(optionsFp, P2EventLastOptionsFingerprint, StringComparison.Ordinal);
+                    bool countChanged = optionCount != P2EventLastOptionCount;
+                    bool stateAdvanced = optionsChanged || countChanged;
+
+                    if (subOpen)
+                    {
+                        P2EventSubChoiceTime = DateTime.UtcNow;
+                        SetP2EventState(P2EventMachineState.WaitingSubPage, P2EventLastSubmittedFingerprint ?? observedFp);
+                        return true;
+                    }
+
+                    double elapsed = P2EventSubmitTime == DateTime.MinValue ? 0.0 : (DateTime.UtcNow - P2EventSubmitTime).TotalSeconds;
+
+                    if (!taskCaptured)
+                    {
+                        // Task capture is a safety net; if the native list cannot be read, only a real state change confirms the choice.
+                        if (elapsed <= P2EventSubmitTimeoutSeconds && !stateAdvanced) return true;
+                        if (!wasChosen && !stateAdvanced)
+                        {
+                            AbortP2Event(p2, "native-not-confirmed-2s");
+                            return true;
+                        }
+                    }
+                    else if (!taskDone)
+                    {
+                        if (elapsed > P2EventSubmitTimeoutSeconds)
+                        {
+                            AbortP2Event(p2, wasChosen ? "backend-timeout-2s" : "native-not-confirmed-2s");
+                            return true;
+                        }
+                        return true;
+                    }
+
+                    if (GetEventBoolProperty(p2Event, "IsFinished"))
+                    {
+                        CompleteP2Event(p2, BuildP2EventFingerprint(p2, generation, eventId, pageBefore, curOpts), "native-IsFinished-after-task");
+                        return true;
+                    }
+
+                    P2EventConfirmedFingerprints.Add(P2EventLastSubmittedFingerprint ?? observedFp);
+                    P2EventPageOrdinal++;
+                    CurrentEventPage = P2EventPageOrdinal;
+                    GD.Print(string.Format("[AiTeammate][Event] event-choice-observed owner=P2 page={0} optionCount={1} optionsChanged={2} isFinished={3} nativeWasChosen={4} subChoice={5}",
+                        pageBefore, optionCount, optionsChanged || countChanged, false, wasChosen, subOpen));
+                    LogP2EventChoiceResolved(p2, wasChosen ? "native-was-chosen" : "task-completed");
+
+                    if (P2EventSubmitCount >= MaxP2EventChoices)
+                    {
+                        AbortP2Event(p2, "max-choices");
+                        return true;
+                    }
+
+                    P2EventEmptySince = DateTime.MinValue;
+                    P2EventSubmitTime = DateTime.UtcNow;
+                    string nextFp = BuildP2EventFingerprint(p2, generation, eventId, P2EventPageOrdinal, curOpts);
+                    SetP2EventState(P2EventMachineState.PendingNextChoice, nextFp);
+                    return true;
+                }
+
+                if (P2EventState == P2EventMachineState.Idle)
+                {
+                    SetP2EventState(P2EventMachineState.PendingInitial, observedFp);
+                }
+
+                if (curOpts == null || curOpts.Count == 0)
+                {
+                    if (P2EventEmptySince == DateTime.MinValue) P2EventEmptySince = DateTime.UtcNow;
+                    double emptyElapsed = (DateTime.UtcNow - P2EventEmptySince).TotalSeconds;
+                    if (emptyElapsed > P2EventSubmitTimeoutSeconds)
+                    {
+                        AbortP2Event(p2, "empty-options-timeout");
+                        return true;
+                    }
+                    return true;
+                }
+
+                string fingerprint = BuildP2EventFingerprint(p2, generation, eventId, P2EventPageOrdinal, curOpts);
+                P2EventFingerprint = fingerprint;
+
+                if (P2EventAbortedFingerprints.Contains(fingerprint)) return true;
+                if (P2EventConfirmedFingerprints.Contains(fingerprint) || P2EventSubmittedFingerprints.Contains(fingerprint))
+                {
+                    if (P2EventDedupLogged.Add(fingerprint))
+                    {
+                        GD.Print(string.Format("[AiTeammate][Event] event-choice-duplicate-suppressed key={0}", fingerprint));
+                    }
+                    return true;
+                }
+
+                if (P2EventSubmitCount >= MaxP2EventChoices)
+                {
+                    AbortP2Event(p2, "max-choices");
+                    return true;
+                }
+
+                bool isAncient = p2Event is MegaCrit.Sts2.Core.Models.AncientEventModel || p2Event.GetType().Name.Contains("Ancient");
                 string eventKind = isAncient ? "neow" : "event";
 
-
-
-                GD.Print(string.Format("[AiTeammate][Flow] probe: EventSynchronizer P2 pending event detected owner=P2 isFinished={0} kind={1}", isFin, eventKind));
-
-
-
-                MethodInfo chooseOptMethod = AccessTools.Method(synchronizer.GetType(), "ChooseOptionForEvent", new Type[] { typeof(Player), typeof(int) });
-                if (chooseOptMethod == null) return false;
-
-                PropertyInfo curOptsProp = AccessTools.Property(p2Event.GetType(), "CurrentOptions");
-                var curOpts = curOptsProp != null ? curOptsProp.GetValue(p2Event, null) as System.Collections.IList : null;
-
-                string curOptsFingerprint = ComputeOptionsFingerprint(curOpts);
-                string generation = CurrentRunGeneration();
-                int pageIndex = FlowCoordinator.CurrentEventPage;
-
-                // Directive #5.33: Check in-flight choice state machine
-                if (InFlightEventKey != null)
-                {
-                    bool optionsChanged = !string.Equals(curOptsFingerprint, InFlightOptionsFingerprint, StringComparison.Ordinal);
-                    bool pendingChoiceCleared = InFlightHadPendingChoice && TurnCoordinator.P2PendingChoiceCount == 0;
-                    bool generationChanged = !string.Equals(generation, InFlightGeneration, StringComparison.Ordinal);
-                    bool isBackendConfirmed = isFin || optionsChanged || pendingChoiceCleared || generationChanged;
-
-                    if (isBackendConfirmed)
-                    {
-                        GD.Print(string.Format("[AiTeammate][Event] event-choice-backend-confirmed key={0}", InFlightEventKey));
-                        GD.Print(string.Format("[AiTeammate][Event] event-choice-resume key={0}", InFlightEventKey));
-                        string childStatus = FlowCoordinator.LastChildCardChoiceCompleted ? "completed" : "none";
-                        GD.Print(string.Format("[AiTeammate][Event] event-p2-choice-resolved owner=P2 page={0} child={1}", InFlightEventPage, childStatus));
-                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind={0} pick={1} reason={2} source={3}", InFlightEventKind ?? "event", InFlightPickId ?? "0", InFlightReason ?? "resolved", InFlightSource ?? "backend"));
-
-                        ConfirmedEventKeys.Add(InFlightEventKey);
-                        InFlightEventKey = null;
-                        InFlightHadPendingChoice = false;
-                        FlowCoordinator.CurrentEventPage++;
-                        pageIndex = FlowCoordinator.CurrentEventPage;
-
-                        if (isFin)
-                        {
-                            FlowCoordinator.IsSubPageManualInteracting = false;
-                            GD.Print(string.Format("[AiTeammate][Event] event-finished owner=P2 finalPage={0}", pageIndex));
-                            ulong p1Id = TurnCoordinator.GetPlayer1NetId();
-                            ulong actual = TurnFlowPatches.GetDraCurrentControlledPlayerId();
-                            string actualStr = (p1Id != 0 && actual == p1Id) ? "P1" : actual.ToString();
-                            GD.Print(string.Format("[AiTeammate][Event] event-room-final-controller expected=P1 actual={0}", actualStr));
-                            return true;
-                        }
-                    }
-                    else
-                    {
-                        double elapsed = (DateTime.UtcNow - InFlightEventSubmitTime).TotalSeconds;
-                        if (elapsed < 3.0)
-                        {
-                            GD.Print(string.Format("[AiTeammate][Event] event-choice-duplicate-suppressed key={0}", InFlightEventKey));
-                            return true;
-                        }
-                        else
-                        {
-                            if (InFlightEventRetryCount == 0)
-                            {
-                                InFlightEventRetryCount = 1;
-                                InFlightEventSubmitTime = DateTime.UtcNow;
-                                GD.Print(string.Format("[AiTeammate][Event] event-choice-resume key={0} retry=1", InFlightEventKey));
-                                try
-                                {
-                                    chooseOptMethod.Invoke(synchronizer, new object[] { p2, InFlightChosenIndex });
-                                }
-                                catch (Exception ex)
-                                {
-                                    if (ex.ToString().IndexOf("Event is not in progress", StringComparison.OrdinalIgnoreCase) >= 0)
-                                    {
-                                        GD.Print("[AiTeammate][Event] event-not-in-progress caught: duplicate callback handled without switching foreground");
-                                        InFlightEventKey = null;
-                                    }
-                                }
-                                return true;
-                            }
-                            else
-                            {
-                                GD.Print(string.Format("[AiTeammate][Event] event-choice-loop-guard-tripped key={0}", InFlightEventKey));
-                                GD.Print(string.Format("[AiTeammate][Event] event-choice-abort key={0} reason=timeout-no-backend-response", InFlightEventKey));
-                                AbortedEventKeys.Add(InFlightEventKey);
-                                InFlightEventKey = null;
-                                FlowCoordinator.IsSubPageManualInteracting = false;
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                if (curOpts == null || curOpts.Count == 0) return true;
-
-                int chosenIdx = -1;
-                string pickId = "0";
-                string source = "fallback";
-                string reason = "fallback";
-                bool hasCoreDecision = false;
-
-                if (curOpts.Count == 1)
-                {
-                    var singleOpt = curOpts[0];
-                    PropertyInfo isProcProp = AccessTools.Property(singleOpt.GetType(), "IsProceed");
-                    bool isProc = isProcProp != null && (bool)isProcProp.GetValue(singleOpt, null);
-                    chosenIdx = 0;
-                    pickId = "0";
-                    reason = isProc ? "proceed" : "single-option";
-                    source = "dialogue";
-                }
-                else
-                {
-                    try
-                    {
-                        IRunState run = GetRunState();
-                        Assembly liveAsm = FindLiveSpireStrategistAssembly();
-                        Type policyType = liveAsm != null ? liveAsm.GetType("SpireStrategist.Core.EventPolicy") : AccessTools.TypeByName("SpireStrategist.Core.EventPolicy");
-                        Type snapReaderType = liveAsm != null ? liveAsm.GetType("SpireStrategist.Mod.SnapshotReader") : AccessTools.TypeByName("SpireStrategist.Mod.SnapshotReader");
-                        Type eventChoiceType = liveAsm != null ? liveAsm.GetType("SpireStrategist.Core.EventChoice") : AccessTools.TypeByName("SpireStrategist.Core.EventChoice");
-
-                        if (policyType != null && snapReaderType != null && eventChoiceType != null && run != null)
-                        {
-                            MethodInfo readMethod = null;
-                            foreach (var m in snapReaderType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
-                            {
-                                if (m.Name == "Read" && m.GetParameters().Length == 2)
-                                {
-                                    readMethod = m;
-                                    break;
-                                }
-                            }
-                            if (readMethod != null)
-                            {
-                                object snapshot = readMethod.Invoke(null, new object[] { run, p2 });
-                                if (snapshot != null)
-                                {
-                                    FieldInfo pcField = AccessTools.Field(snapshot.GetType(), "<PlayerCount>k__BackingField");
-                                    if (pcField != null) pcField.SetValue(snapshot, 1);
-
-                                    System.Collections.IList choicesList = Activator.CreateInstance(typeof(List<>).MakeGenericType(eventChoiceType)) as System.Collections.IList;
-                                    for (int i = 0; i < curOpts.Count; i++)
-                                    {
-                                        var opt = curOpts[i];
-                                        if (opt == null) continue;
-                                        bool locked = GetOptionIsLocked(opt);
-                                        string title = GetOptionTitle(opt);
-                                        string desc = GetOptionDescription(opt);
-                                        object choiceObj = Activator.CreateInstance(eventChoiceType, new object[] { i, title ?? "", desc ?? "", locked });
-                                        if (choiceObj != null) choicesList.Add(choiceObj);
-                                    }
-
-                                    MethodInfo evaluateMethod = policyType.GetMethod("EvaluateChoice", BindingFlags.Public | BindingFlags.Static);
-                                    if (evaluateMethod != null)
-                                    {
-                                        object decision = evaluateMethod.Invoke(null, new object[] { snapshot, choicesList });
-                                        if (decision != null)
-                                        {
-                                            PropertyInfo chosenIdxProp = AccessTools.Property(decision.GetType(), "ChosenIndex");
-                                            if (chosenIdxProp != null)
-                                            {
-                                                int decIdx = (int)chosenIdxProp.GetValue(decision, null);
-                                                if (decIdx >= 0 && decIdx < curOpts.Count)
-                                                {
-                                                    if (isAncient)
-                                                    {
-                                                        string tStr = GetOptionTitle(curOpts[decIdx]);
-                                                        string dStr = GetOptionDescription(curOpts[decIdx]);
-                                                        string tkStr = GetOptionTextKey(curOpts[decIdx]);
-                                                        string full = ((tStr ?? "") + " " + (dStr ?? "") + " " + (tkStr ?? "")).ToLowerInvariant();
-                                                        if (full.Contains("massive_scroll") || full.Contains("巨大卷轴"))
-                                                        {
-                                                            decIdx = -1; // Veto MASSIVE_SCROLL!
-                                                            GD.Print("[AiTeammate][Event] massive_scroll vetoed for P2");
-                                                        }
-                                                    }
-                                                    if (decIdx >= 0)
-                                                    {
-                                                        chosenIdx = decIdx;
-                                                        pickId = decIdx.ToString();
-                                                        source = "core";
-                                                        reason = "event-policy";
-                                                        hasCoreDecision = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-
-                    if (isAncient)
-                    {
-                        if (!hasCoreDecision)
-                        {
-                            string neowSource;
-                            int neowIdx = EvaluateAncientOptionHeuristic(p2, curOpts, out pickId, out neowSource);
-                            if (neowIdx >= 0 && neowIdx < curOpts.Count)
-                            {
-                                chosenIdx = neowIdx;
-                                reason = "heuristic";
-                                source = neowSource;
-                            }
-                        }
-                    }
-
-                    if (chosenIdx < 0)
-                    {
-                        chosenIdx = EvaluateEventOptionFallback(p2, curOpts, out pickId);
-                        source = "fallback";
-                        reason = "fallback-safe";
-                    }
-                }
-
+                string pickId;
+                string source;
+                string reason;
+                int chosenIdx = PickP2EventOption(p2, p2Event, curOpts, isAncient, out pickId, out source, out reason);
                 if (chosenIdx < 0 || chosenIdx >= curOpts.Count)
                 {
-                    chosenIdx = 0;
-                    pickId = "0";
-                    reason = "bounded-fallback";
-                    source = "fallback";
-                }
-
-                string key = string.Format("{0}|{1}|{2}|{3}|{4}|{5}", generation, p2.NetId, eventId, pageIndex, curOptsFingerprint, chosenIdx);
-
-                if (AbortedEventKeys.Contains(key))
-                {
+                    AbortP2Event(p2, "no-viable-option");
                     return true;
                 }
 
-                if (ConfirmedEventKeys.Contains(key))
+                if (string.Equals(reason, "repeatable-options-exhausted", StringComparison.Ordinal))
                 {
-                    GD.Print(string.Format("[AiTeammate][Event] event-choice-duplicate-suppressed key={0}", key));
+                    AbortP2Event(p2, "repeatable-options-exhausted");
                     return true;
                 }
 
-                GD.Print(string.Format("[AiTeammate][Event] event-p2-choice-begin owner=P2 page={0}", pageIndex));
-                GD.Print(string.Format("[AiTeammate][Flow] p2-choice-offer kind={0} owner=P2 page={1} options={2} pick={3}", eventKind, pageIndex, curOpts.Count, pickId));
+                MethodInfo chooseOptMethod = AccessTools.Method(synchronizer.GetType(), "ChooseOptionForEvent", new Type[] { typeof(Player), typeof(int) });
+                if (chooseOptMethod == null)
+                {
+                    AbortP2Event(p2, "native-api-missing");
+                    return true;
+                }
 
-                InFlightEventKey = key;
-                InFlightEventId = eventId;
-                InFlightEventPage = pageIndex;
-                InFlightOptionsFingerprint = curOptsFingerprint;
-                InFlightChosenIndex = chosenIdx;
-                InFlightPickId = pickId;
-                InFlightEventKind = eventKind;
-                InFlightReason = reason;
-                InFlightSource = source;
-                InFlightGeneration = generation;
-                InFlightEventSubmitTime = DateTime.UtcNow;
-                InFlightEventRetryCount = 0;
-                InFlightHadPendingChoice = false;
+                P2EventLastSubmittedFingerprint = fingerprint;
+                P2EventLastOptionsFingerprint = optionsFp;
+                P2EventLastOptionCount = optionCount;
+                P2EventChosenIndex = chosenIdx;
+                P2EventChosenOption = curOpts[chosenIdx];
+                P2EventSubmitCount++;
+                P2EventSubmitTime = DateTime.UtcNow;
+                P2EventSubChoiceTime = DateTime.MinValue;
+                P2EventEmptySince = DateTime.MinValue;
+                P2EventPendingTask = null;
+                P2EventSubmitInProgress = true;
+                P2EventSubmittedFingerprints.Add(fingerprint);
+                RecordP2EventUsedIndex(ComputeOptionsTextKeys(curOpts), chosenIdx);
                 FlowCoordinator.LastChildCardChoiceCompleted = false;
 
-                GD.Print(string.Format("[AiTeammate][Event] event-choice-submit owner=P2 key={0} pick={1}", key, chosenIdx));
-                GD.Print(string.Format("[AiTeammate][Event] event-choice-wait-backend key={0}", key));
+                SetP2EventState(P2EventMachineState.Submitted, fingerprint);
+                GD.Print(string.Format("[AiTeammate][Event] event-p2-choice-begin owner=P2 page={0}", P2EventPageOrdinal));
+                GD.Print(string.Format("[AiTeammate][Flow] p2-choice-offer kind={0} owner=P2 page={1} options={2} pick={3}", eventKind, P2EventPageOrdinal, curOpts.Count, pickId));
+                GD.Print(string.Format("[AiTeammate][Event] event-choice-submit owner=P2 key={0} pick={1} source={2} reason={3}", fingerprint, chosenIdx, source, reason));
+                GD.Print(string.Format("[AiTeammate][Event] event-choice-wait-backend key={0}", fingerprint));
 
+                int taskCountBefore = GetP2PendingOptionTaskCount(synchronizer);
                 try
                 {
                     chooseOptMethod.Invoke(synchronizer, new object[] { p2, chosenIdx });
                 }
                 catch (Exception ex)
                 {
+                    P2EventSubmitInProgress = false;
                     string exStr = ex.ToString();
-                    if (exStr.IndexOf("Event is not in progress", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (exStr.IndexOf("Event is not in progress", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        exStr.IndexOf("already finished", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        GD.Print("[AiTeammate][Event] event-not-in-progress caught: duplicate callback handled without switching foreground");
-                        InFlightEventKey = null;
+                        GD.Print("[AiTeammate][Event] event-not-in-progress caught: leaving state machine to re-read native finish state");
                         return true;
                     }
                     GD.PrintErr("[AiTeammate][Event] chooseOptMethod exception: " + ex);
+                    AbortP2Event(p2, "native-exception");
+                    return true;
+                }
+                finally
+                {
+                    P2EventSubmitInProgress = false;
                 }
 
+                P2EventPendingTask = CaptureP2PendingOptionTask(synchronizer, taskCountBefore);
                 return true;
             }
-catch (Exception ex)
-
+            catch (Exception ex)
             {
-
                 GD.PrintErr("[AiTeammate][Flow] ResolveP2PendingEvent exception: " + ex);
+                try { AbortP2Event(p2, "native-exception"); } catch { }
+                return true;
+            }
+            finally
+            {
+                P2EventSubmitInProgress = false;
+            }
+        }
 
+        private static object FindP2EventForResolver(object synchronizer, Player p2)
+        {
+            try
+            {
+                MethodInfo getEvent = AccessTools.Method(synchronizer.GetType(), "GetEventForPlayer", new Type[] { typeof(Player) });
+                if (getEvent != null)
+                {
+                    object ev = getEvent.Invoke(synchronizer, new object[] { p2 });
+                    if (ev != null) return ev;
+                }
+            }
+            catch { }
+
+            try
+            {
+                PropertyInfo eventsProp = AccessTools.Property(synchronizer.GetType(), "Events");
+                IEnumerable events = eventsProp != null ? eventsProp.GetValue(synchronizer, null) as IEnumerable : null;
+                if (events != null)
+                {
+                    foreach (object ev in events)
+                    {
+                        if (ev == null) continue;
+                        PropertyInfo ownerProp = AccessTools.Property(ev.GetType(), "Owner");
+                        Player owner = ownerProp != null ? ownerProp.GetValue(ev, null) as Player : null;
+                        if (owner != null && (owner == p2 || owner.NetId == p2.NetId || owner.NetId == TurnCoordinator.GetPlayer2NetId()))
+                            return ev;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static bool GetEventBoolProperty(object ev, string name)
+        {
+            try
+            {
+                PropertyInfo p = AccessTools.Property(ev.GetType(), name);
+                if (p == null) p = ev.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null)
+                {
+                    object v = p.GetValue(ev, null);
+                    if (v is bool) return (bool)v;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static IList GetEventOptions(object ev)
+        {
+            try
+            {
+                PropertyInfo p = AccessTools.Property(ev.GetType(), "CurrentOptions");
+                if (p == null) p = ev.GetType().GetProperty("CurrentOptions", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null) return p.GetValue(ev, null) as IList;
+            }
+            catch { }
+            return null;
+        }
+
+        private static bool GetOptionWasChosen(object opt)
+        {
+            if (opt == null) return false;
+            try
+            {
+                PropertyInfo p = AccessTools.Property(opt.GetType(), "WasChosen");
+                if (p == null) p = opt.GetType().GetProperty("WasChosen", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null)
+                {
+                    object v = p.GetValue(opt, null);
+                    if (v is bool) return (bool)v;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static IList GetP2PendingOptionTasks(object synchronizer)
+        {
+            try
+            {
+                FieldInfo f = AccessTools.Field(synchronizer.GetType(), "_pendingOptionTasks");
+                return f != null ? f.GetValue(synchronizer) as IList : null;
+            }
+            catch { return null; }
+        }
+
+        private static int GetP2PendingOptionTaskCount(object synchronizer)
+        {
+            IList tasks = GetP2PendingOptionTasks(synchronizer);
+            return tasks != null ? tasks.Count : 0;
+        }
+
+        private static Task CaptureP2PendingOptionTask(object synchronizer, int countBefore)
+        {
+            IList tasks = GetP2PendingOptionTasks(synchronizer);
+            if (tasks == null || tasks.Count <= countBefore) return null;
+            return tasks[tasks.Count - 1] as Task;
+        }
+
+        private static bool IsP2EventSubChoiceInFlight(Player p2)
+        {
+            if (TurnCoordinator.P2PendingChoiceCount > 0) return true;
+            // Any active reward transaction is a native sub-choice for the current event page.
+            // The gate is released by the existing reward flow; the event FSM waits here instead of submitting again.
+            if (RewardGateActive) return true;
+            return false;
+        }
+
+        private static string ComputeOptionsTextKeys(IList options)
+        {
+            if (options == null || options.Count == 0) return "empty";
+            List<string> parts = new List<string>();
+            for (int i = 0; i < options.Count; i++)
+            {
+                object opt = options[i];
+                string tk = opt != null ? GetOptionTextKey(opt) : "";
+                if (string.IsNullOrEmpty(tk)) tk = "idx" + i;
+                parts.Add(i + ":" + tk);
+            }
+            return string.Join(";", parts.ToArray());
+        }
+
+        private static string BuildP2EventFingerprint(Player p2, string generation, string eventId, int page, IList opts)
+        {
+            return string.Format("{0}|owner=P2:{1}|event={2}|page={3}|options={4}|keys={5}",
+                generation ?? "no-generation",
+                p2 != null ? p2.NetId : 0UL,
+                eventId ?? "unknown",
+                page,
+                ComputeOptionsFingerprint(opts),
+                ComputeOptionsTextKeys(opts));
+        }
+
+        private static void RecordP2EventUsedIndex(string optionSetKey, int index)
+        {
+            if (index < 0) return;
+            string key = optionSetKey ?? "empty";
+            HashSet<int> used;
+            if (!P2EventUsedIndicesByOptions.TryGetValue(key, out used))
+            {
+                used = new HashSet<int>();
+                P2EventUsedIndicesByOptions[key] = used;
+            }
+            used.Add(index);
+        }
+
+        private static string GetP2OptionPickId(object opt, int idx)
+        {
+            string t = GetOptionTitle(opt);
+            if (!string.IsNullOrEmpty(t)) return t;
+            string tk = GetOptionTextKey(opt);
+            if (!string.IsNullOrEmpty(tk)) return tk;
+            return idx.ToString();
+        }
+
+        private static bool IsExitLikeOption(object opt)
+        {
+            string full = ((GetOptionTitle(opt) ?? "") + " " + (GetOptionTextKey(opt) ?? "") + " " + (GetOptionDescription(opt) ?? "")).ToLowerInvariant();
+            return full.Contains("exit") || full.Contains("leave") || full.Contains("proceed") || full.Contains("continue") ||
+                   full.Contains("离开") || full.Contains("退出") || full.Contains("继续") || full.Contains("离去");
+        }
+
+        private static int FindUnusedP2EventOption(IList opts, HashSet<int> used)
+        {
+            int firstUnused = -1;
+            for (int i = 0; i < opts.Count; i++)
+            {
+                if (used != null && used.Contains(i)) continue;
+                object opt = opts[i];
+                if (opt == null) continue;
+                if (GetOptionIsLocked(opt)) continue;
+                if (IsExitLikeOption(opt)) return i;
+                if (firstUnused < 0) firstUnused = i;
+            }
+            return firstUnused;
+        }
+
+        private static int PickP2EventOption(Player p2, object p2Event, IList curOpts, bool isAncient, out string pickId, out string source, out string reason)
+        {
+            pickId = "0";
+            source = "fallback";
+            reason = "fallback";
+            if (curOpts == null || curOpts.Count == 0) return -1;
+
+            if (curOpts.Count == 1)
+            {
+                object singleOpt = curOpts[0];
+                bool isProceed = false;
+                try
+                {
+                    PropertyInfo isProcProp = AccessTools.Property(singleOpt.GetType(), "IsProceed");
+                    isProceed = isProcProp != null && (bool)isProcProp.GetValue(singleOpt, null);
+                }
+                catch { }
+                pickId = GetP2OptionPickId(singleOpt, 0);
+                source = "dialogue";
+                reason = isProceed ? "proceed" : "single-option";
+                return 0;
             }
 
-            return false;
+            int chosenIdx = -1;
+            bool hasCoreDecision = false;
+            if (!EventStrategistMissing)
+            {
+                hasCoreDecision = TryEvaluateEventViaStrategist(p2, p2Event, curOpts, isAncient, out chosenIdx, out pickId, out source, out reason);
+            }
 
+            if (isAncient && !hasCoreDecision)
+            {
+                string neowSource;
+                int neowIdx = EvaluateAncientOptionHeuristic(p2, curOpts, out pickId, out neowSource);
+                if (neowIdx >= 0 && neowIdx < curOpts.Count)
+                {
+                    chosenIdx = neowIdx;
+                    source = neowSource;
+                    reason = "neow-heuristic";
+                    hasCoreDecision = true;
+                }
+            }
+
+            if (chosenIdx < 0 || chosenIdx >= curOpts.Count)
+            {
+                chosenIdx = EvaluateEventOptionFallback(p2, curOpts, out pickId);
+                source = "fallback";
+                reason = "fallback-safe";
+            }
+
+            if (chosenIdx < 0 || chosenIdx >= curOpts.Count)
+            {
+                chosenIdx = 0;
+                pickId = GetP2OptionPickId(curOpts[0], 0);
+                reason = "bounded-fallback";
+                source = "fallback";
+            }
+
+            string optionSetKey = ComputeOptionsTextKeys(curOpts);
+            HashSet<int> used;
+            if (P2EventUsedIndicesByOptions.TryGetValue(optionSetKey, out used) && used != null && used.Contains(chosenIdx) && curOpts.Count > 1)
+            {
+                int alt = FindUnusedP2EventOption(curOpts, used);
+                if (alt >= 0)
+                {
+                    chosenIdx = alt;
+                    pickId = GetP2OptionPickId(curOpts[alt], alt);
+                    source = "state-machine";
+                    reason = "avoid-repeat";
+                }
+                else
+                {
+                    reason = "repeatable-options-exhausted";
+                    return -1;
+                }
+            }
+
+            return chosenIdx;
         }
+
+        private static void LogP2EventChoiceResolved(Player p2, string reason)
+        {
+            string kind = "event";
+            GD.Print(string.Format("[AiTeammate][Event] event-choice-backend-confirmed key={0}", P2EventLastSubmittedFingerprint ?? P2EventFingerprint ?? "none"));
+            GD.Print(string.Format("[AiTeammate][Event] event-p2-choice-resolved owner=P2 page={0}", P2EventPageOrdinal));
+            GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind={0} pick={1} reason={2} source={3}", kind, P2EventChosenOption != null ? GetP2OptionPickId(P2EventChosenOption, P2EventChosenIndex) : "0", reason ?? "resolved", "native"));
+        }
+
+        private static void CompleteP2Event(Player p2, string fingerprint, string reason)
+        {
+            if (P2EventState == P2EventMachineState.Completed) return;
+            SetP2EventState(P2EventMachineState.Completed, fingerprint);
+            GD.Print(string.Format("[AiTeammate][Event] event-finished owner=P2 finalPage={0} reason={1}", P2EventPageOrdinal, reason ?? "unknown"));
+            P2EventPendingTask = null;
+            P2EventChosenOption = null;
+            P2EventChosenIndex = -1;
+            P2EventManualTakeover = false;
+            FlowCoordinator.IsSubPageManualInteracting = false;
+            try { FlowCoordinator.TryCompleteEventRewardGate("event-completed"); } catch { }
+            try
+            {
+                ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                if (p1Id != 0) TurnFlowPatches.SwitchControlToPlayer(p1Id, "wakuu-p1-restore:event-completed", false);
+            }
+            catch { }
+        }
+
+        private static void AbortP2Event(Player p2, string reason)
+        {
+            if (P2EventState == P2EventMachineState.FailedOpen) return;
+            string fp = P2EventFingerprint ?? P2EventLastSubmittedFingerprint ?? "none";
+            SetP2EventState(P2EventMachineState.FailedOpen, fp);
+            GD.Print(string.Format("[AiTeammate][Event] event-choice-abort owner=P2 reason={0}", reason ?? "unknown"));
+            P2EventAbortedFingerprints.Add(fp);
+            P2EventPendingTask = null;
+            P2EventChosenOption = null;
+            P2EventChosenIndex = -1;
+            FlowCoordinator.IsSubPageManualInteracting = false;
+            ReleaseP2EventGates(p2, reason);
+        }
+
+        private static void ReleaseP2EventGates(Player p2, string reason)
+        {
+            try { ModEntry.SuppressControlSwitchUi = false; } catch { }
+            P2EventManualTakeover = true;
+            try { FlowCoordinator.TryCompleteEventRewardGate("event-choice-abort"); } catch { }
+            try
+            {
+                if (FlowCoordinator.RewardGateActive && FlowCoordinator.RewardGateBackendCompleted)
+                    FlowCoordinator.ReleaseRewardGate("event-choice-abort");
+            }
+            catch { }
+            try
+            {
+                ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                if (p1Id != 0) TurnFlowPatches.SwitchControlToPlayer(p1Id, "wakuu-p1-restore:event-choice-abort", false);
+            }
+            catch { }
+            GD.Print(string.Format("[AiTeammate][Event] event-gate-release owner=P2 reason={0}", reason ?? "unknown"));
+        }
+
 
     }
 
@@ -15764,6 +21850,18 @@ catch (Exception ex)
     public static class FlowPatches
 
     {
+        public static class RunStartLifecyclePatches
+        {
+            public static void RunManagerLaunchPrefix()
+            {
+                TurnCoordinator.ResetRunStartIdentityState();
+            }
+
+            public static void RunManagerLaunchPostfix()
+            {
+                TurnCoordinator.ResetRunStartIdentityToP1("run-manager-launch");
+            }
+        }
 
         // Directive #5.15 T1: End Turn Button Force-Visible & Auto-Close Block
 
@@ -15787,111 +21885,38 @@ catch (Exception ex)
 
                     if (combatUi == null || combatUi.EndTurnButton == null) return;
 
-                    if (!TurnCoordinator.IsInCombat() || TurnCoordinator.IsPlayer1Dead()) return;
+                    if (!TurnCoordinator.IsInCombat()) return;
+                    bool p1Dead = TurnCoordinator.IsPlayer1Dead();
+                    bool p2Dead = TurnCoordinator.IsPlayer2Dead();
+                    if (p1Dead && p2Dead) return;
 
-                    ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                    Player evalPlayer = !p1Dead ? FlowCoordinator.GetPlayer1() : FlowCoordinator.GetPlayer2();
+                    if (evalPlayer == null) return;
+                    ulong targetId = evalPlayer.NetId;
 
-                    ulong localId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : p1Id;
+                    ulong localId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : targetId;
 
-                    bool isCurrentP1 = (currentPlayer != null && currentPlayer.NetId == p1Id) || (currentPlayer == null && localId == p1Id);
-                    if (!isCurrentP1) return;
+                    bool isCurrentTarget = (currentPlayer != null && currentPlayer.NetId == targetId) || (currentPlayer == null && localId == targetId);
+                    if (!isCurrentTarget) return;
+
+                    if (p1Dead && !p2Dead)
+                    {
+                        var playerHandField = AccessTools.Field(combatUi.EndTurnButton.GetType(), "_playerHand");
+                        if (playerHandField != null)
+                        {
+                            var p2Hand = PileType.Hand.GetPile(evalPlayer);
+                            playerHandField.SetValue(combatUi.EndTurnButton, p2Hand);
+                        }
+                    }
 
                     if (EndTurnHandlerFallbackPatch.IsP1TurnActive())
-
                     {
-
                         Player p1 = FlowCoordinator.GetPlayer1();
-
                         if (p1 != null)
-
                         {
-
                             var btn = combatUi.EndTurnButton;
-                            object canTurnObj = null;
-                            try { var cp = AccessTools.Property(btn.GetType(), "CanTurnBeEnded"); if (cp != null) canTurnObj = cp.GetValue(btn, null); } catch { }
-                            bool canTurn = canTurnObj is bool && (bool)canTurnObj;
-                            if (!canTurn) return;
-                            bool wasForced = false;
-                            var stateProp = AccessTools.Property(btn.GetType(), "State");
-                            object currentState = stateProp != null ? stateProp.GetValue(btn, null) : null;
-                            int stateInt = -1;
-                            try { if (currentState != null) stateInt = Convert.ToInt32(currentState); } catch { }
-                            bool wasDisabled = stateInt != 0;
-                            bool wasHidden = !btn.Visible;
-                            if (!wasDisabled && !wasHidden) return;
-
-                            if (stateProp != null)
-
-                            {
-
-                                object curState = currentState;
-
-                                if (wasDisabled) // force Enabled state
-
-                                {
-
-                                    var setStateMethod = AccessTools.Method(btn.GetType(), "SetState");
-
-                                    if (setStateMethod != null)
-
-                                    {
-
-                                        Type stateEnumType = AccessTools.TypeByName("MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton+State");
-
-                                        if (stateEnumType != null)
-
-                                        {
-
-                                            object enabledVal;
-                                            try { enabledVal = Enum.Parse(stateEnumType, "Enabled"); }
-                                            catch { enabledVal = Enum.ToObject(stateEnumType, 0); }
-
-                                            setStateMethod.Invoke(btn, new object[] { enabledVal });
-
-                                            wasForced = true;
-
-                                        }
-
-                                    }
-
-                                }
-
-                            }
-
-
-
-                            if (wasHidden || btn.Modulate.A < 0.9f)
-                            {
-                                btn.Visible = true;
-                                FieldInfo stateField = AccessTools.Field(btn.GetType(), "_state");
-                                if (stateField != null)
-                                {
-                                    stateField.SetValue(btn, Enum.ToObject(stateField.FieldType, 2)); // State.Hidden
-                                }
-                                MethodInfo setStateMethod = AccessTools.Method(btn.GetType(), "SetState");
-                                if (setStateMethod != null)
-                                {
-                                    ParameterInfo[] ps = setStateMethod.GetParameters();
-                                    if (ps.Length > 0)
-                                    {
-                                        setStateMethod.Invoke(btn, new object[] { Enum.ToObject(ps[0].ParameterType, 0) }); // State.Enabled (triggers AnimIn)
-                                    }
-                                }
-                                wasForced = true;
-                            }
-
-                            if (wasForced)
-
-                            {
-
-                                string stateStr = stateProp != null ? (stateProp.GetValue(btn, null) ?? "unknown").ToString() : "unknown";
-
-                                GD.Print("[AiTeammate][Coord] endturn-force-state corrected=True can-turn=True disabled=" + wasDisabled + " hidden=" + wasHidden + " state=" + stateStr);
-
-                            }
-
+                            TurnCoordinator.HealEndTurnButtonIfMisplaced(btn, "DraReevaluate");
                         }
-
                     }
 
                 }
@@ -15913,22 +21938,79 @@ catch (Exception ex)
         
         public static class EndTurnButtonSetStateGuardPatch
         {
-            public static bool Prefix(object newState)
+            public static bool Prefix(MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton __instance, ref object newState)
             {
                 try
                 {
+                    int stateInt = -1;
+                    try { if (newState != null) stateInt = Convert.ToInt32(newState); } catch { }
+                    string stateStr = newState != null ? newState.ToString() : "unknown";
+
+                    var cm = CombatManager.Instance;
+                    var cs = cm != null ? cm.DebugOnlyGetState() : null;
+                    bool isPlayerSide = cs != null && cs.CurrentSide == CombatSide.Player;
+
+                    // 1. Allow player side turn initialization (e.g. OnTurnStarted before Phase == Play)
                     if (!TurnCoordinator.IsPlayPhase())
                     {
-                        int stateInt = -1;
-                        try { if (newState != null) stateInt = Convert.ToInt32(newState); } catch { }
-                        if (stateInt != 2) // 2 = State.Hidden
+                        if (isPlayerSide && stateInt == 0)
                         {
-                            GD.Print(string.Format("[AiTeammate][Coord] endturn-nonplayphase-setstate-blocked requested={0}", newState != null ? newState.ToString() : "null"));
+                            // Player side turn starting - do NOT block State.Enabled!
+                        }
+                        else if (stateInt != 2) // 2 = State.Hidden
+                        {
+                            GD.Print(string.Format("[AiTeammate][Coord] endturn-nonplayphase-setstate-blocked requested={0}", stateStr));
+                            TurnCoordinator.LogEndTurnButtonStateAudit(stateStr, "non-playphase", "SetState", __instance);
                             return false;
                         }
                     }
+
+                    // 2. Intercept P2 deploy/endturn trying to change button from Hidden to Disabled
+                    Player p1 = FlowCoordinator.GetPlayer1();
+                    bool p1ActiveAndNotReady = !TurnCoordinator.IsPlayer1Dead() && p1 != null && cm != null && !cm.IsPlayerReadyToEndTurn(p1);
+
+                    FieldInfo sf = AccessTools.Field(__instance.GetType(), "_state");
+                    PropertyInfo sp = AccessTools.Property(__instance.GetType(), "State");
+                    object curStateObj = sf != null ? sf.GetValue(__instance) : (sp != null ? sp.GetValue(__instance, null) : null);
+                    int curStateInt = curStateObj != null ? Convert.ToInt32(curStateObj) : -1;
+
+                    if (p1ActiveAndNotReady && (TurnCoordinator.IsDeploying || TurnCoordinator.P2ActionSenderScopeDepth > 0) && stateInt == 1)
+                    {
+                        Type stateEnumType = AccessTools.TypeByName("MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton+State");
+                        if (stateEnumType != null)
+                        {
+                            newState = Enum.ToObject(stateEnumType, 0); // Elevate to Enabled
+                            stateInt = 0;
+                            stateStr = "Enabled";
+                            GD.Print("[AiTeammate][Coord] endturn-p2-deploy-elevated-to-enabled");
+                        }
+                    }
+
+                    // 3. Guaranteed AnimIn(): whenever transitioning from Hidden (2) to non-Hidden (0 or 1),
+                    // if target is Disabled (1), call AnimIn() actively so it moves to ShowPos!
+                    if (curStateInt == 2 && stateInt != 2)
+                    {
+                        TurnCoordinator.LastEndTurnAnimInUtc = DateTime.UtcNow;
+                        if (stateInt == 1)
+                        {
+                            MethodInfo animInMethod = AccessTools.Method(__instance.GetType(), "AnimIn");
+                            if (animInMethod != null)
+                            {
+                                animInMethod.Invoke(__instance, null);
+                                GD.Print("[AiTeammate][Coord] endturn-animin-invoked-for-disabled from=Hidden");
+                            }
+                        }
+                    }
+
+                    if (stateInt != 0) // Disabled (1) or Hidden (2)
+                    {
+                        TurnCoordinator.LogEndTurnButtonStateAudit(stateStr, "auto", "SetState", __instance);
+                    }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Coord] EndTurnButtonSetStateGuardPatch error: " + ex);
+                }
                 return true;
             }
         }
@@ -15940,30 +22022,19 @@ catch (Exception ex)
                 try
                 {
                     if (__instance == null) return;
-                    if (!TurnCoordinator.IsPlayPhase()) return;
-                    Player p1 = FlowCoordinator.GetPlayer1();
-                    var cm = CombatManager.Instance;
-                    if (p1 == null || (cm != null && cm.IsPlayerReadyToEndTurn(p1))) return;
+                    FieldInfo stateField = AccessTools.Field(__instance.GetType(), "_state");
+                    PropertyInfo stateProp = AccessTools.Property(__instance.GetType(), "State");
+                    object currentState = stateField != null ? stateField.GetValue(__instance) : (stateProp != null ? stateProp.GetValue(__instance, null) : null);
+                    int stateInt = -1;
+                    try { if (currentState != null) stateInt = Convert.ToInt32(currentState); } catch { }
+                    string stateStr = currentState != null ? currentState.ToString() : "unknown";
 
-                    __instance.Visible = true;
-                    if (__instance.Modulate.A < 0.9f)
+                    if (stateInt != 0 || !__instance.Visible)
                     {
-                        FieldInfo stateField = AccessTools.Field(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton), "_state");
-                        if (stateField != null)
-                        {
-                            stateField.SetValue(__instance, Enum.ToObject(stateField.FieldType, 2)); // State.Hidden
-                        }
-                        MethodInfo setMethod = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NEndTurnButton), "SetState");
-                        if (setMethod != null)
-                        {
-                            ParameterInfo[] ps = setMethod.GetParameters();
-                            if (ps.Length > 0)
-                            {
-                                setMethod.Invoke(__instance, new object[] { Enum.ToObject(ps[0].ParameterType, 0) }); // State.Enabled
-                            }
-                        }
-                        GD.Print("[AiTeammate][Coord] endturn-button-refresh-anim-healed");
+                        TurnCoordinator.LogEndTurnButtonStateAudit(stateStr, "auto", "RefreshEnabled", __instance);
                     }
+
+                    TurnCoordinator.HealEndTurnButtonIfMisplaced(__instance, "RefreshEnabled");
                 }
                 catch { }
             }
@@ -16262,6 +22333,7 @@ catch (Exception ex)
             {
                 try
                 {
+                    RewardBackendFlow.EnqueuePendingCardReward(__instance);
                     RewardBackendFlow.NotifyCardRewardSelectBegin(__instance);
                 }
                 catch { }
@@ -16331,6 +22403,12 @@ catch (Exception ex)
                 catch (Exception ex) { GD.PrintErr("[AiTeammate][Flow] reward-button-task-observer-failed exception=" + ex); }
             }
 
+            public static void RewardButtonReloadPostfix(NRewardButton __instance)
+            {
+                try { FlowCoordinator.FormatP2PotionRewardButton(__instance, null); }
+                catch (Exception ex) { GD.PrintErr("[AiTeammate][Flow] reward-button-reload-observer-failed exception=" + ex); }
+            }
+
             public static void RewardsCompletedSignalPostfix(NRewardsScreen __instance)
             {
                 try { FlowCoordinator.MarkRewardCompletedSignal(__instance); }
@@ -16343,10 +22421,60 @@ catch (Exception ex)
                 catch (Exception ex) { GD.PrintErr("[AiTeammate][Flow] reward-screen-state-observer-failed exception=" + ex); }
             }
 
-            public static void RewardsSetCompletePostfix(object __instance)
+            public static void RewardsSetCompletePostfix(object __instance, object setState, object completeState)
             {
-                try { FlowCoordinator.RecheckRewardGate("RewardsSetSynchronizer.CompleteRewardsSet"); }
-                catch (Exception ex) { GD.PrintErr("[AiTeammate][Flow] reward-set-observer-failed exception=" + ex); }
+                try
+                {
+                    MegaCrit.Sts2.Core.Rewards.RewardsSet set = null;
+                    if (setState != null)
+                    {
+                        FieldInfo fSet = AccessTools.Field(setState.GetType(), "set");
+                        if (fSet != null) set = fSet.GetValue(setState) as MegaCrit.Sts2.Core.Rewards.RewardsSet;
+                    }
+                    string stateStr = completeState != null ? completeState.ToString() : "unknown";
+                    bool isSkipped = stateStr.IndexOf("Skipped", StringComparison.OrdinalIgnoreCase) >= 0;
+                    GD.Print("[AiTeammate][Flow] reward-set-native-complete state=" + stateStr + " isSkipped=" + isSkipped);
+                    FlowCoordinator.MarkRewardSetCompletedNative(set, "RewardsSetSynchronizer.CompleteRewardsSet:" + stateStr, isSkipped);
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Flow] reward-set-observer-failed exception=" + ex);
+                    FlowCoordinator.RecheckRewardGate("RewardsSetSynchronizer.CompleteRewardsSet:fallback");
+                }
+            }
+
+            public static void RewardSkippedFromPostfix(NRewardsScreen __instance, Godot.Control button)
+            {
+                try
+                {
+                    if (button != null)
+                    {
+                        PropertyInfo rProp = AccessTools.Property(button.GetType(), "Reward");
+                        object reward = rProp != null ? rProp.GetValue(button, null) : null;
+                        if (reward != null)
+                        {
+                            GD.Print("[AiTeammate][Flow] reward-button-skipped-native type=" + reward.GetType().Name);
+                            FlowCoordinator.MarkRewardBackendSkipped(reward, "button-skipped");
+                        }
+                    }
+                    FlowCoordinator.RecheckRewardGate("NRewardsScreen.RewardSkippedFrom");
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Flow] reward-skipped-from-observer-failed exception=" + ex);
+                }
+            }
+
+            public static void AfterOverlayClosedPostfix(NRewardsScreen __instance)
+            {
+                try
+                {
+                    FlowCoordinator.RecheckRewardGate("NRewardsScreen.AfterOverlayClosed");
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Flow] reward-after-overlay-closed-observer-failed exception=" + ex);
+                }
             }
 
             public static bool ExitCurrentRoomPrefix(ref Task<MegaCrit.Sts2.Core.Rooms.AbstractRoom> __result)
@@ -17275,12 +23403,105 @@ catch (Exception ex)
 
 
         // Directive #5.30: Event Auto-Next Suppression & P1 Foreground Anchor
+        // Directive #5.9 Task 2: DRA UI toggle patches
+        public static class DraCombatSwitchButtonsPatch
+        {
+            public static void Postfix(MegaCrit.Sts2.Core.Nodes.Combat.NCombatUi combatUi)
+            {
+                try
+                {
+                    if (combatUi == null || !GodotObject.IsInstanceValid(combatUi)) return;
+                    if (!FlowCoordinator.ShowLocalMultiControlUi)
+                    {
+                        string cName = "LocalCombatSwitchButtons";
+                        Assembly draAsm = TurnCoordinator.FindDualRoleAdventureAssembly();
+                        if (draAsm != null)
+                        {
+                            Type t = draAsm.GetType("LocalMultiControl.Scripts.Patch.LocalCombatSwitchButtons");
+                            if (t != null)
+                            {
+                                FieldInfo f = AccessTools.Field(t, "ContainerName");
+                                if (f != null) cName = f.GetValue(null) as string ?? cName;
+                            }
+                        }
+                        Node container = combatUi.FindChild(cName, true, false);
+                        CanvasItem ci = container as CanvasItem;
+                        if (ci != null && GodotObject.IsInstanceValid(ci))
+                        {
+                            ci.Visible = false;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        public static class DraPlayerStateSwitchUiPatch
+        {
+            public static void Postfix(object __0)
+            {
+                try
+                {
+                    Node node = __0 as Node;
+                    if (node == null || !GodotObject.IsInstanceValid(node)) return;
+                    if (!FlowCoordinator.ShowLocalMultiControlUi)
+                    {
+                        string btnName = "LocalSwitchPlayerButton";
+                        Assembly draAsm = TurnCoordinator.FindDualRoleAdventureAssembly();
+                        if (draAsm != null)
+                        {
+                            Type t = draAsm.GetType("LocalMultiControl.Scripts.Patch.LocalMultiplayerPlayerStateSwitchUi");
+                            if (t != null)
+                            {
+                                FieldInfo f = AccessTools.Field(t, "SwitchButtonName");
+                                if (f != null) btnName = f.GetValue(null) as string ?? btnName;
+                                MethodInfo hideMethod = AccessTools.Method(t, "HideOriginalIdLabel");
+                                if (hideMethod != null) hideMethod.Invoke(null, new object[] { __0 });
+                                MethodInfo refreshTrackerMethod = AccessTools.Method(t, "RefreshCombatTrackerState");
+                                if (refreshTrackerMethod != null) refreshTrackerMethod.Invoke(null, new object[] { __0 });
+                            }
+                        }
+                        Node btn = node.FindChild(btnName, true, false);
+                        CanvasItem ci = btn as CanvasItem;
+                        if (ci != null && GodotObject.IsInstanceValid(ci))
+                        {
+                            ci.Visible = false;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        public static class DraGhostHandsOverlayPatch
+        {
+            public static void Postfix(Node __instance)
+            {
+                try
+                {
+                    CanvasItem ci = __instance as CanvasItem;
+                    if (ci != null && GodotObject.IsInstanceValid(ci) && !FlowCoordinator.ShowLocalMultiControlUi)
+                    {
+                        ci.Visible = false;
+                    }
+                }
+                catch { }
+            }
+        }
+
         public static class DraTryRunPendingEventAutoSwitchPatch
         {
             public static bool Prefix(string source)
             {
                 try
                 {
+                    if (FlowCoordinator.P2EventManualTakeover && TurnCoordinator.IsInEventRoom())
+                    {
+                        if (FlowCoordinator.ShouldLogEventController("event-auto-next-manual-takeover", "allow-p2"))
+                            GD.Print("[AiTeammate][Event] event-auto-next-manual-takeover allow=P2");
+                        return true;
+                    }
+
                     try
                     {
                         Type coopType = AccessTools.TypeByName("LocalMultiControl.Scripts.Context.LocalSelfCoopContext");
@@ -17338,6 +23559,8 @@ catch (Exception ex)
                 {
 
                     if (TurnCoordinator.IsEnteringRoom) return false; // Directive #5.14 T2: Silent during room enter window
+
+                    if (FlowCoordinator.P2EventManualTakeover) return true;
 
                     if (!FlowCoordinator.AutoEventEnabled) return true;
 
@@ -17581,6 +23804,8 @@ catch (Exception ex)
 
                     List<CardModel> selectedCards = new List<CardModel>();
                     List<CardModel> candidates = new List<CardModel>();
+                    bool coreSuccess = false;
+                    List<string> coreScoreEntries = new List<string>();
 
                     if (p2.Deck != null && p2.Deck.Cards != null)
                     {
@@ -17644,15 +23869,163 @@ catch (Exception ex)
 
                         var pool = candidates.Count > 0 ? candidates : allEligible;
 
-                        pool.Sort(delegate(CardModel a, CardModel b) {
-                            double sa = FlowCoordinator.GetCardScore(a.Id.ToString());
-                            double sb = FlowCoordinator.GetCardScore(b.Id.ToString());
-                            return sa.CompareTo(sb); // Lowest score first
-                        });
+                        coreSuccess = false;
+                        string coreFallbackReason = null;
+                        coreScoreEntries = new List<string>();
 
-                        for (int i = 0; i < pool.Count && selectedCards.Count < targetCount; i++)
+                        if (pool.Count == 0)
                         {
-                            selectedCards.Add(pool[i]);
+                            coreFallbackReason = "zero-candidates";
+                        }
+                        else if ((DateTime.UtcNow - startTime).TotalSeconds >= 2.0)
+                        {
+                            coreFallbackReason = "timeout";
+                        }
+                        else
+                        {
+                            try
+                            {
+                                Assembly liveAsm = FlowCoordinator.FindLiveSpireStrategistAssembly();
+                                if (liveAsm == null)
+                                {
+                                    coreFallbackReason = "no-assembly";
+                                }
+                                else
+                                {
+                                    Type snapReaderType = liveAsm.GetType("SpireStrategist.Mod.SnapshotReader");
+                                    Type stratValType = liveAsm.GetType("SpireStrategist.Core.StrategicValue");
+                                    if (snapReaderType == null || stratValType == null)
+                                    {
+                                        coreFallbackReason = "types-missing";
+                                    }
+                                    else
+                                    {
+                                        MethodInfo readMethod = null;
+                                        MethodInfo readCardMethod = null;
+                                        foreach (var m in snapReaderType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                                        {
+                                            if (m.Name == "Read" && m.GetParameters().Length == 2) readMethod = m;
+                                            else if (m.Name == "ReadCard" && m.GetParameters().Length == 1) readCardMethod = m;
+                                        }
+
+                                        if (readMethod == null || readCardMethod == null)
+                                        {
+                                            coreFallbackReason = "read-methods-missing";
+                                        }
+                                        else
+                                        {
+                                            IRunState run = FlowCoordinator.GetRunState();
+                                            object snapshot = run != null ? readMethod.Invoke(null, new object[] { run, p2 }) : null;
+                                            if (snapshot == null)
+                                            {
+                                                coreFallbackReason = "no-snapshot";
+                                            }
+                                            else
+                                            {
+                                                FieldInfo pcField = AccessTools.Field(snapshot.GetType(), "<PlayerCount>k__BackingField");
+                                                if (pcField != null) pcField.SetValue(snapshot, 1);
+
+                                                ConstructorInfo svCtor = stratValType.GetConstructor(new Type[] { snapshot.GetType() });
+                                                if (svCtor == null)
+                                                {
+                                                    foreach (var ctor in stratValType.GetConstructors())
+                                                    {
+                                                        if (ctor.GetParameters().Length == 1) { svCtor = ctor; break; }
+                                                    }
+                                                }
+
+                                                MethodInfo removeMethod = stratValType.GetMethod("Remove", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                                                if (svCtor == null || removeMethod == null)
+                                                {
+                                                    coreFallbackReason = "strategic-value-reflection-failed";
+                                                }
+                                                else
+                                                {
+                                                    object svInstance = svCtor.Invoke(new object[] { snapshot });
+                                                    Dictionary<CardModel, double> removeScores = new Dictionary<CardModel, double>();
+                                                    bool anyValid = false;
+
+                                                    foreach (CardModel c in pool)
+                                                    {
+                                                        if (c == null) continue;
+                                                        if ((DateTime.UtcNow - startTime).TotalSeconds >= 2.0)
+                                                        {
+                                                            coreFallbackReason = "timeout";
+                                                            break;
+                                                        }
+                                                        object cSnap = readCardMethod.Invoke(null, new object[] { c });
+                                                        if (cSnap != null)
+                                                        {
+                                                            object ret = removeMethod.Invoke(svInstance, new object[] { cSnap });
+                                                            double sVal = Convert.ToDouble(ret);
+                                                            if (!double.IsNaN(sVal) && !double.IsInfinity(sVal))
+                                                            {
+                                                                removeScores[c] = sVal;
+                                                                anyValid = true;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (string.IsNullOrEmpty(coreFallbackReason))
+                                                    {
+                                                        if (!anyValid || removeScores.Count == 0)
+                                                        {
+                                                            coreFallbackReason = "all-scores-invalid";
+                                                        }
+                                                        else
+                                                        {
+                                                            // Directive #5.94 T1: Sort pool descending by Remove score (higher remove benefit = best transform candidate)
+                                                            pool.Sort(delegate(CardModel a, CardModel b) {
+                                                                double sa = removeScores.ContainsKey(a) ? removeScores[a] : double.MinValue;
+                                                                double sb = removeScores.ContainsKey(b) ? removeScores[b] : double.MinValue;
+                                                                return sb.CompareTo(sa);
+                                                            });
+
+                                                            for (int i = 0; i < pool.Count && selectedCards.Count < targetCount; i++)
+                                                            {
+                                                                selectedCards.Add(pool[i]);
+                                                            }
+
+                                                            int topN = Math.Min(5, pool.Count);
+                                                            for (int i = 0; i < topN; i++)
+                                                            {
+                                                                CardModel cm = pool[i];
+                                                                double sc = removeScores.ContainsKey(cm) ? removeScores[cm] : double.NaN;
+                                                                coreScoreEntries.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1:F1}", cm.Id.ToString(), sc));
+                                                            }
+                                                            coreSuccess = true;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                coreFallbackReason = ex.Message;
+                            }
+                        }
+
+                        if (!coreSuccess)
+                        {
+                            if (!string.IsNullOrEmpty(coreFallbackReason))
+                            {
+                                GD.Print(string.Format("[AiTeammate][Flow] transform-core-fallback reason={0}", coreFallbackReason));
+                            }
+                            selectedCards.Clear();
+                            pool.Sort(delegate(CardModel a, CardModel b) {
+                                double sa = FlowCoordinator.GetCardScore(a.Id.ToString());
+                                double sb = FlowCoordinator.GetCardScore(b.Id.ToString());
+                                return sa.CompareTo(sb); // Lowest score first
+                            });
+
+                            for (int i = 0; i < pool.Count && selectedCards.Count < targetCount; i++)
+                            {
+                                selectedCards.Add(pool[i]);
+                            }
                         }
                     }
 
@@ -17662,7 +24035,15 @@ catch (Exception ex)
                     List<string> pickIds = new List<string>();
                     for (int i = 0; i < selectedCards.Count; i++) pickIds.Add(selectedCards[i].Id.ToString());
                     string pickStr = string.Join(",", pickIds.ToArray());
-                    GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=transform pick={0} count={1} reason=card-score-lowest source=card_scores", pickStr, selectedCards.Count));
+                    if (coreSuccess)
+                    {
+                        string scoresStr = string.Join(",", coreScoreEntries.ToArray());
+                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=transform pick={0} count={1} reason=core-remove-benefit source=spire-strategist scores={2}", pickStr, selectedCards.Count, scoresStr));
+                    }
+                    else
+                    {
+                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=transform pick={0} count={1} reason=card-score-lowest source=card_scores", pickStr, selectedCards.Count));
+                    }
 
                     __result = Task.FromResult<IEnumerable<CardModel>>(selectedCards);
                     return false;
@@ -17828,175 +24209,166 @@ catch (Exception ex)
         }
 
         public static class CardSelectFromDeckForUpgradePatch
-
         {
+            public static bool IsExecutingRestUpgrade = false;
+            public static CardModel LastUpgradeTargetCard = null;
 
-            public static bool Prefix(Player player, object prefs, ref Task<IEnumerable<CardModel>> __result)
-
+            public static void CardCmdUpgradePostfix(CardModel card)
             {
-
-                DateTime startTime = DateTime.UtcNow;
-
                 try
-
                 {
-
-                    if (player == null) return true;
-
-                    Player p2 = FlowCoordinator.GetPlayer2();
-
-                    if (p2 == null || player.NetId != p2.NetId) { ChoiceSuppressionPatches.LastP1ChoicePassThroughTime = DateTime.UtcNow; return true; } // P1 100% manual!
-
-
-
-                    string fingerprint = "upgrade:" + (player.Deck != null && player.Deck.Cards != null ? player.Deck.Cards.Count : 0);
-
-                    if (!AutopilotFuse.TryBeginOffer("upgrade", fingerprint))
-
+                    if (card == null) return;
+                    ulong p2Id = TurnCoordinator.GetPlayer2NetId();
+                    if (p2Id != 0 && card.Owner != null && card.Owner.NetId == p2Id)
                     {
-
-                        GD.Print("[AiTeammate][Flow] upgrade circuit-open: fail-open to manual selection");
-
-                        return true;
-
-                    }
-
-
-
-                    GD.Print("[AiTeammate][Flow] p2-choice-offer kind=upgrade owner=P2");
-
-
-
-                    CardModel bestCard = null;
-
-                    double bestScore = double.MinValue;
-
-
-
-                    if (p2.Deck != null && p2.Deck.Cards != null)
-
-                    {
-
-                        // Directive #5.0.8 T4: Select highest score attack card
-
-                        foreach (CardModel card in p2.Deck.Cards)
-
+                        if (IsExecutingRestUpgrade || (LastUpgradeTargetCard != null && LastUpgradeTargetCard == card))
                         {
-
-                            if (card == null || !card.IsUpgradable) continue;
-
-                            bool isAttack = card.Type.ToString().ToLowerInvariant().Contains("attack");
-
-                            if (isAttack)
-
-                            {
-
-                                double score = FlowCoordinator.GetCardScore(card.Id.ToString());
-
-                                if (score > bestScore)
-
-                                {
-
-                                    bestScore = score;
-
-                                    bestCard = card;
-
-                                }
-
-                            }
-
+                            IsExecutingRestUpgrade = false;
+                            string cid = card.Id != null ? card.Id.ToString() : "unknown";
+                            GD.Print(string.Format("[AiTeammate][Flow] rest-upgrade-backend-confirmed owner=P2 card={0}", cid));
+                            GD.Print(string.Format("[AiTeammate][Flow] rest-upgrade-resolved owner=P2 card={0}", cid));
+                            LastUpgradeTargetCard = null;
                         }
-
-
-
-                        if (bestCard == null)
-
-                        {
-
-                            foreach (CardModel card in p2.Deck.Cards)
-
-                            {
-
-                                if (card != null && card.IsUpgradable)
-
-                                {
-
-                                    double score = FlowCoordinator.GetCardScore(card.Id.ToString());
-
-                                    if (score > bestScore)
-
-                                    {
-
-                                        bestScore = score;
-
-                                        bestCard = card;
-
-                                    }
-
-                                }
-
-                            }
-
-                        }
-
-
-
-                        if (bestCard == null && p2.Deck.Cards.Count > 0)
-
-                        {
-
-                            bestCard = p2.Deck.Cards[0];
-
-                        }
-
                     }
-
-
-
-                    double elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
-
-                    if (elapsed > 3.0)
-
-                    {
-
-                        GD.Print(string.Format("[AiTeammate][Flow] rest-fallback: upgrade sub-choice timed out ({0:F2}s > 3.0s)", elapsed));
-
-                    }
-
-
-
-                    string pickId = bestCard != null ? bestCard.Id.ToString() : "none";
-
-                    AutopilotFuse.MarkResolved("upgrade", fingerprint);
-
-                    GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=upgrade pick={0} reason=card-score-highest source=card_scores", pickId));
-                    FlowCoordinator.LastChildCardChoiceCompleted = true;
-
-
-
-                    IEnumerable<CardModel> selected = bestCard != null ? new CardModel[] { bestCard } : new CardModel[0];
-
-                    __result = Task.FromResult(selected);
-
-                    return false; // Skip the upgrade selection screen completely!
-
                 }
-
-                catch (Exception ex)
-
-                {
-
-                    GD.PrintErr("[AiTeammate][Flow] CardSelectFromDeckForUpgradePatch exception: " + ex);
-
-                    return true;
-
-                }
-
+                catch { }
             }
 
+            public static bool Prefix(Player player, object prefs, ref Task<IEnumerable<CardModel>> __result)
+            {
+                DateTime startTime = DateTime.UtcNow;
+                try
+                {
+                    if (player == null) return true;
+                    Player p2 = FlowCoordinator.GetPlayer2();
+                    if (p2 == null || player.NetId != p2.NetId)
+                    {
+                        ChoiceSuppressionPatches.LastP1ChoicePassThroughTime = DateTime.UtcNow;
+                        return true; // P1 100% manual!
+                    }
+
+                    string fingerprint = "upgrade:" + (player.Deck != null && player.Deck.Cards != null ? player.Deck.Cards.Count : 0);
+                    if (!AutopilotFuse.TryBeginOffer("upgrade", fingerprint))
+                    {
+                        GD.Print("[AiTeammate][Flow] upgrade circuit-open: fail-open to manual selection");
+                        return true;
+                    }
+
+                    List<CardModel> upgradableCards = new List<CardModel>();
+                    if (p2.Deck != null && p2.Deck.Cards != null)
+                    {
+                        foreach (CardModel card in p2.Deck.Cards)
+                        {
+                            if (card != null && card.IsUpgradable) upgradableCards.Add(card);
+                        }
+                    }
+
+                    if (upgradableCards.Count == 0)
+                    {
+                        GD.Print("[AiTeammate][Flow] rest-upgrade-failed reason=no-upgradable-cards");
+                        return true;
+                    }
+
+                    Dictionary<CardModel, double> cardScores = new Dictionary<CardModel, double>();
+                    string evalSource = null;
+
+                    Assembly liveAsm = FlowCoordinator.FindLiveSpireStrategistAssembly();
+                    if (liveAsm != null)
+                    {
+                        try
+                        {
+                            Type readerType = liveAsm.GetType("SpireStrategist.Mod.SnapshotReader");
+                            Type mechanicsType = liveAsm.GetType("SpireStrategist.Core.CardMechanics");
+                            MethodInfo readMethod = readerType != null ? readerType.GetMethod("Read", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static) : null;
+                            MethodInfo readCardMethod = readerType != null ? readerType.GetMethod("ReadCard", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static) : null;
+                            MethodInfo upgradeMethod = mechanicsType != null ? mechanicsType.GetMethod("Upgrade", BindingFlags.Public | BindingFlags.Static) : null;
+
+                            if (readMethod != null && readCardMethod != null && upgradeMethod != null)
+                            {
+                                IRunState run = FlowCoordinator.GetRunState();
+                                object snapshot = readMethod.Invoke(null, new object[] { run, p2 });
+                                if (snapshot != null)
+                                {
+                                    // SpireStrategist multiplayer constraint: PlayerCount == 1
+                                    FieldInfo pcField = snapshot.GetType().GetField("<PlayerCount>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic);
+                                    if (pcField != null) pcField.SetValue(snapshot, 1);
+
+                                    foreach (var c in upgradableCards)
+                                    {
+                                        object cardSnap = readCardMethod.Invoke(null, new object[] { c });
+                                        double val = (double)upgradeMethod.Invoke(null, new object[] { snapshot, cardSnap });
+                                        cardScores[c] = val;
+                                    }
+                                    evalSource = "spire-strategist";
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            GD.PrintErr("[AiTeammate][Flow] rest-upgrade-strategist-failed exception=" + ex);
+                        }
+                    }
+
+                    if (evalSource != "spire-strategist")
+                    {
+                        evalSource = "fallback";
+                        foreach (var c in upgradableCards)
+                        {
+                            string cid = c.Id != null ? c.Id.ToString().ToUpperInvariant() : "";
+                            double val = 1.0;
+                            if (cid.Contains("STRIKE") || cid.Contains("DEFEND"))
+                            {
+                                val = 1.0;
+                            }
+                            else
+                            {
+                                double baseScore = FlowCoordinator.GetCardScore(c.Id.ToString());
+                                val = 2.0 + baseScore * 0.2;
+                                if (c.Type == CardType.Power) val += 2.0;
+                            }
+                            cardScores[c] = val;
+                        }
+                    }
+
+                    upgradableCards.Sort(delegate(CardModel a, CardModel b)
+                    {
+                        double sa = cardScores.ContainsKey(a) ? cardScores[a] : 0.0;
+                        double sb = cardScores.ContainsKey(b) ? cardScores[b] : 0.0;
+                        int cmp = sb.CompareTo(sa);
+                        if (cmp != 0) return cmp;
+                        return string.Compare(a.Id.ToString(), b.Id.ToString(), StringComparison.Ordinal);
+                    });
+
+                    List<string> candidateEntries = new List<string>();
+                    foreach (var c in upgradableCards)
+                    {
+                        double s = cardScores.ContainsKey(c) ? cardScores[c] : 0.0;
+                        candidateEntries.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1:F2}", c.Id, s));
+                    }
+                    string candidatesStr = string.Join(",", candidateEntries.ToArray());
+                    GD.Print(string.Format("[AiTeammate][Flow] rest-upgrade-offer owner=P2 candidates={0}", candidatesStr));
+
+                    CardModel bestCard = upgradableCards[0];
+                    string pickId = bestCard.Id.ToString();
+                    AutopilotFuse.MarkResolved("upgrade", fingerprint);
+
+                    GD.Print(string.Format("[AiTeammate][Flow] rest-upgrade-submit owner=P2 card={0} source={1}", pickId, evalSource));
+                    FlowCoordinator.LastChildCardChoiceCompleted = true;
+
+                    IsExecutingRestUpgrade = true;
+                    LastUpgradeTargetCard = bestCard;
+
+                    IEnumerable<CardModel> selected = new CardModel[] { bestCard };
+                    __result = Task.FromResult(selected);
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Flow] rest-upgrade error: " + ex);
+                    return true;
+                }
+            }
         }
-
-
 
         public static class RestSitePatch
         {
@@ -18587,6 +24959,19 @@ catch (Exception ex)
                         int cmp = FlowCoordinator.GetCardRemovalPriorityScore(a).CompareTo(FlowCoordinator.GetCardRemovalPriorityScore(b));
                         return cmp != 0 ? cmp : string.Compare(a.Id.ToString(), b.Id.ToString(), StringComparison.Ordinal);
                     });
+                    if (FlowCoordinator.IsExecutingP2AutoRemoval && !string.IsNullOrEmpty(FlowCoordinator.LastShopRemovalTargetCardId))
+                    {
+                        for (int i = 0; i < ranked.Count; i++)
+                        {
+                            if (ranked[i] != null && ranked[i].Id.ToString() == FlowCoordinator.LastShopRemovalTargetCardId)
+                            {
+                                CardModel tgt = ranked[i];
+                                ranked.RemoveAt(i);
+                                ranked.Insert(0, tgt);
+                                break;
+                            }
+                        }
+                    }
                     for (int i = 0; i < ranked.Count && selectedCards.Count < targetCount; i++)
                     {
                         if (ranked[i] != null && !selectedCards.Contains(ranked[i])) selectedCards.Add(ranked[i]);
@@ -18632,6 +25017,107 @@ catch (Exception ex)
         }
 
 
+
+        // Directive #5.53: CardSelectCmd Universal Runtime Probe
+        public static class CardSelectCmdProbePatch
+        {
+            public static void Prefix(MethodBase __originalMethod, object[] __args)
+            {
+                try
+                {
+                    if (__originalMethod == null) return;
+                    string methodName = __originalMethod.Name;
+                    string signature = __originalMethod.ToString();
+
+                    Player player = null;
+                    object contextObj = null;
+                    object prefsObj = null;
+                    List<CardModel> candidateCards = new List<CardModel>();
+
+                    ParameterInfo[] paramInfos = __originalMethod.GetParameters();
+                    for (int i = 0; i < paramInfos.Length && __args != null && i < __args.Length; i++)
+                    {
+                        object arg = __args[i];
+                        string pName = paramInfos[i].Name;
+                        if (arg is Player) player = (Player)arg;
+                        else if (pName == "context" || (arg != null && pName.IndexOf("context", StringComparison.OrdinalIgnoreCase) >= 0)) contextObj = arg;
+                        else if (pName == "prefs" || (arg != null && pName.IndexOf("prefs", StringComparison.OrdinalIgnoreCase) >= 0)) prefsObj = arg;
+
+                        if (arg is IEnumerable<CardModel> && !(arg is CardPile))
+                        {
+                            foreach (var c in (IEnumerable<CardModel>)arg) { if (c != null) candidateCards.Add(c); }
+                        }
+                        else if (arg is List<CardCreationResult>)
+                        {
+                            foreach (var cc in (List<CardCreationResult>)arg) { if (cc != null && cc.Card != null) candidateCards.Add(cc.Card); }
+                        }
+                        else if (arg is IReadOnlyList<IReadOnlyList<CardModel>>)
+                        {
+                            var bundleList = (IReadOnlyList<IReadOnlyList<CardModel>>)arg;
+                            for (int b = 0; b < bundleList.Count; b++)
+                            {
+                                if (bundleList[b] != null)
+                                {
+                                    for (int c = 0; c < bundleList[b].Count; c++)
+                                    {
+                                        if (bundleList[b][c] != null) candidateCards.Add(bundleList[b][c]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ulong p1NetId = TurnCoordinator.GetPlayer1NetId();
+                    ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                    ulong netId = player != null ? player.NetId : (LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0);
+                    string role = "unknown";
+                    if (netId != 0)
+                    {
+                        if (netId == p1NetId) role = "P1";
+                        else if (netId == p2NetId || (player != null && TurnCoordinator.IsPlayer2(player))) role = "P2";
+                    }
+
+                    List<string> cardSummaries = new List<string>();
+                    for (int i = 0; i < candidateCards.Count; i++)
+                    {
+                        var c = candidateCards[i];
+                        if (c != null)
+                        {
+                            cardSummaries.Add(c.Id != null ? c.Id.ToString() : "unknown");
+                        }
+                    }
+                    string cardsDetail = string.Join(",", cardSummaries.ToArray());
+                    string contextType = contextObj != null ? contextObj.GetType().FullName : "null";
+                    string prefsType = prefsObj != null ? prefsObj.GetType().FullName : "null";
+                    bool inEvent = TurnCoordinator.IsInEventRoom();
+                    MethodInfo mi = __originalMethod as MethodInfo;
+                    string returnType = (mi != null && mi.ReturnType != null) ? mi.ReturnType.FullName : "void";
+
+                    string stackTrace = System.Environment.StackTrace;
+                    string[] stackLines = stackTrace.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    List<string> cleanStack = new List<string>();
+                    for (int i = 0; i < stackLines.Length && cleanStack.Count < 5; i++)
+                    {
+                        string line = stackLines[i].Trim();
+                        if (line.IndexOf("CardSelectCmdProbePatch", StringComparison.OrdinalIgnoreCase) < 0 &&
+                            line.IndexOf("get_StackTrace", StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            cleanStack.Add(line);
+                        }
+                    }
+                    string stackSummary = string.Join(" -> ", cleanStack.ToArray());
+
+                    GD.Print(string.Format(
+                        "[AiTeammate][Probe] card-select-probe method={0} sig=\"{1}\" playerNetId={2} role={3} candidates={4} cards=[{5}] contextType={6} prefsType={7} inEvent={8} enteredPrefix=True returnType={9} stack=\"{10}\"",
+                        methodName, signature, netId, role, candidateCards.Count, cardsDetail, contextType, prefsType, inEvent, returnType, stackSummary
+                    ));
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Probe] CardSelectCmdProbePatch exception: " + ex);
+                }
+            }
+        }
 
         public static class CardSelectFromSimpleGridPatch
         {
@@ -18951,6 +25437,61 @@ catch (Exception ex)
                         }
                     }
 
+                    bool inEvent = TurnCoordinator.IsInEventRoom() || !TurnCoordinator.IsInCombat();
+
+                    CardModel bestCard = null;
+                    double bestScore = double.MinValue;
+                    foreach (var card in cardList)
+                    {
+                        if (card == null) continue;
+                        double score = FlowCoordinator.GetCardScore(card.Id.ToString());
+                        if (TurnCoordinator.IsInCombat() && (card.TargetType == TargetType.AnyPlayer || card.TargetType == TargetType.AnyAlly))
+                        {
+                            score -= 5000.0;
+                        }
+                        if (score > bestScore)
+                        {
+                            bestScore = score;
+                            bestCard = card;
+                        }
+                    }
+
+                    if (bestCard == null && cardList.Count > 0) bestCard = cardList[0];
+                    if (bestCard != null && bestCard.Owner == null) bestCard.Owner = p2;
+                    string pickId = bestCard != null ? bestCard.Id.ToString() : "none";
+
+                    if (inEvent)
+                    {
+                        string eventId = FlowCoordinator.CurrentEventId ?? "event";
+                        int page = FlowCoordinator.CurrentEventPage;
+                        List<string> cardIds = new List<string>();
+                        for (int i = 0; i < cardList.Count; i++)
+                        {
+                            if (cardList[i] != null) cardIds.Add(cardList[i].Id.ToString());
+                        }
+                        string cardsStr = string.Join(",", cardIds.ToArray());
+                        string choiceId = "unknown";
+                        if (context != null)
+                        {
+                            PropertyInfo idProp = AccessTools.Property(context.GetType(), "ChoiceId") ?? AccessTools.Property(context.GetType(), "Id");
+                            if (idProp != null)
+                            {
+                                object v = idProp.GetValue(context, null);
+                                if (v != null) choiceId = v.ToString();
+                            }
+                        }
+
+                        GD.Print(string.Format("[AiTeammate][Event] event-card-grid-offer owner=P2 event={0} page={1} cards={2}", eventId, page, cardsStr));
+                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-offer kind=grid owner=P2 options={0}", cardList.Count));
+                        GD.Print(string.Format("[AiTeammate][Event] event-card-grid-submit owner=P2 choiceId={0} pick={1}", choiceId, pickId));
+                        GD.Print(string.Format("[AiTeammate][Event] event-card-grid-backend-confirmed owner=P2 choiceId={0}", choiceId));
+                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=grid pick={0} reason=card-score-highest source=card_scores", pickId));
+
+                        FlowCoordinator.LastChildCardChoiceCompleted = true;
+                        __result = Task.FromResult(bestCard);
+                        return false;
+                    }
+
                     string fingerprint = "choose-card:" + cardList.Count + ":" + cardList[0].Id;
                     if (!AutopilotFuse.TryBeginOffer("choose-card", fingerprint))
                     {
@@ -18967,28 +25508,6 @@ catch (Exception ex)
                     }
 
                     GD.Print(string.Format("[AiTeammate][Flow] p2-choice-offer kind=choose-card owner=P2 options={0}", cardList.Count));
-
-                    CardModel bestCard = null;
-                    double bestScore = double.MinValue;
-                    foreach (var card in cardList)
-                    {
-                        if (card == null) continue;
-                        double score = FlowCoordinator.GetCardScore(card.Id.ToString());
-                        if (card.TargetType == TargetType.AnyPlayer || card.TargetType == TargetType.AnyAlly)
-                        {
-                            score -= 5000.0;
-                        }
-                        if (score > bestScore)
-                        {
-                            bestScore = score;
-                            bestCard = card;
-                        }
-                    }
-
-                    if (bestCard != null && bestCard.Owner == null)
-                    {
-                        bestCard.Owner = p2;
-                    }
 
                     double elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
                     if (elapsed > 3.0 || bestCard == null)
@@ -19007,9 +25526,9 @@ catch (Exception ex)
                         FlowCoordinator.TripSubPageAndHandover(p2, "choose-card", fingerprint, "choose-card-timeout");
                         return true;
                     }
-
-                    string pickId = bestCard.Id.ToString();
                     AutopilotFuse.MarkResolved("choose-card", fingerprint);
+                    TurnCoordinator.ActivePotionResolvedCard = pickId;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-potion-choice-resolved owner=P2 card={0}", pickId));
                     GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=choose-card pick={0} reason=card-score-highest source=card_scores", pickId));
 
                     __result = Task.FromResult(bestCard);
@@ -19044,6 +25563,30 @@ catch (Exception ex)
         public static class CardSelectFromDeckForEnchantmentPatch
 
         {
+            private static readonly HashSet<string> ProbedEnchantFingerprints = new HashSet<string>();
+
+            public static string MapEnchantmentToCoreKey(object enchantment)
+            {
+                if (enchantment == null) return null;
+                string typeName = enchantment.GetType().Name.ToUpperInvariant();
+                if (typeName.Contains("ADROIT")) return "ADROIT";
+                if (typeName.Contains("NIMBLE")) return "NIMBLE";
+                if (typeName.Contains("GOOPY")) return "GOOPY";
+                if (typeName.Contains("SHARP")) return "SHARP";
+                if (typeName.Contains("VIGOROUS")) return "VIGOROUS";
+                if (typeName.Contains("SWIFT")) return "SWIFT";
+                if (typeName.Contains("SOWN")) return "SOWN";
+                if (typeName.Contains("CORRUPTED")) return "CORRUPTED";
+                if (typeName.Contains("INSTINCT")) return "INSTINCT";
+                if (typeName.Contains("SLITHER")) return "SLITHER";
+                if (typeName.Contains("IMBUED")) return "IMBUED";
+                if (typeName.Contains("STEADY")) return "STEADY";
+                if (typeName.Contains("SPIRAL")) return "SPIRAL";
+                if (typeName.Contains("CLONE")) return "CLONE";
+                if (typeName.Contains("PERFECTFIT") || typeName.Contains("PERFECT_FIT")) return "PERFECT_FIT";
+                if (typeName.Contains("SOULSPOWER") || typeName.Contains("SOULS_POWER")) return "SOULS_POWER";
+                return null;
+            }
 
             private static bool SolveEnchantment(
 
@@ -19095,11 +25638,12 @@ catch (Exception ex)
 
 
 
-                    string enchantId = enchantment != null ? enchantment.GetType().Name : "unknown";
+                    string enchantTypeName = enchantment != null ? enchantment.GetType().Name : "unknown";
+                    string enchantFullTypeName = enchantment != null ? enchantment.GetType().FullName : "unknown";
 
                     int deckCount = (player.Deck != null && player.Deck.Cards != null) ? player.Deck.Cards.Count : (cards != null ? cards.Count : 0);
 
-                    string fingerprint = "enchant:" + enchantId + ":" + deckCount;
+                    string fingerprint = "enchant:" + enchantTypeName + ":" + deckCount;
 
 
 
@@ -19113,7 +25657,10 @@ catch (Exception ex)
 
                     }
 
-
+                    if (ProbedEnchantFingerprints.Add(fingerprint))
+                    {
+                        GD.Print(string.Format("[AiTeammate][Flow] enchant-core-probe type={0} full={1} amount={2}", enchantTypeName, enchantFullTypeName, amount));
+                    }
 
                     GD.Print("[AiTeammate][Flow] p2-choice-offer kind=enchant owner=P2");
 
@@ -19131,11 +25678,9 @@ catch (Exception ex)
 
 
 
+                    List<CardModel> allCandidates = new List<CardModel>();
                     List<CardModel> attackCandidates = new List<CardModel>();
-
                     List<CardModel> otherCandidates = new List<CardModel>();
-
-
 
                     if (sourceList != null)
 
@@ -19153,7 +25698,7 @@ catch (Exception ex)
 
                             if (!InCombatHandSelectPatch.IsCardOwnedByPlayer(p2, card)) continue;
 
-
+                            allCandidates.Add(card);
 
                             bool isAttack = card.Type.ToString().IndexOf("attack", StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -19177,77 +25722,224 @@ catch (Exception ex)
 
                     }
 
-
-
-                    // Directives: card_scores/Core 选最高分攻击牌附魔
-
-                    List<CardModel> pool = (attackCandidates.Count > 0) ? attackCandidates : otherCandidates;
-
-
-
-                    // Sort descending by card_scores
-
-                    pool.Sort(new Comparison<CardModel>(delegate(CardModel a, CardModel b)
-
+                    int targetPickCount = 1;
+                    try
                     {
-
-                        double sa = FlowCoordinator.GetCardScore(a.Id.ToString());
-
-                        double sb = FlowCoordinator.GetCardScore(b.Id.ToString());
-
-                        return sb.CompareTo(sa); // Descending (highest score first)
-
-                    }));
-
-
-
-                    double elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
-
-                    if (elapsed > 3.0 || pool.Count == 0)
-
-                    {
-
-                        GD.Print(string.Format("[AiTeammate][Flow] enchant sub-choice timed out or unresolvable ({0:F2}s), tripping to manual", elapsed));
-
-                        FlowCoordinator.TripSubPageAndHandover(p2, "enchant", fingerprint, "enchant-timeout");
-
-                        return true;
-
+                        if (prefs != null)
+                        {
+                            var mp = AccessTools.Property(prefs.GetType(), "MaxSelect");
+                            if (mp != null) targetPickCount = Math.Max(1, Convert.ToInt32(mp.GetValue(prefs, null)));
+                        }
                     }
+                    catch { }
 
-
-
-                    int pickCount = Math.Max(1, amount);
-
+                    string coreKey = MapEnchantmentToCoreKey(enchantment);
+                    bool coreSuccess = false;
+                    string coreFallbackReason = null;
                     List<CardModel> selectedList = new List<CardModel>();
-
                     List<string> pickIds = new List<string>();
+                    List<string> coreScoreEntries = new List<string>();
 
-                    for (int i = 0; i < pool.Count && selectedList.Count < pickCount; i++)
-
+                    if (string.IsNullOrEmpty(coreKey))
                     {
+                        coreFallbackReason = "unknown-enchant-type type=" + enchantTypeName;
+                    }
+                    else if (allCandidates.Count == 0)
+                    {
+                        coreFallbackReason = "zero-candidates";
+                    }
+                    else if ((DateTime.UtcNow - startTime).TotalSeconds >= 2.0)
+                    {
+                        coreFallbackReason = "timeout";
+                    }
+                    else
+                    {
+                        try
+                        {
+                            Assembly liveAsm = FlowCoordinator.FindLiveSpireStrategistAssembly();
+                            if (liveAsm == null)
+                            {
+                                coreFallbackReason = "no-assembly";
+                            }
+                            else
+                            {
+                                Type snapReaderType = liveAsm.GetType("SpireStrategist.Mod.SnapshotReader");
+                                Type stratValType = liveAsm.GetType("SpireStrategist.Core.StrategicValue");
+                                if (snapReaderType == null || stratValType == null)
+                                {
+                                    coreFallbackReason = "types-missing";
+                                }
+                                else
+                                {
+                                    MethodInfo readMethod = null;
+                                    MethodInfo readCardMethod = null;
+                                    foreach (var m in snapReaderType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                                    {
+                                        if (m.Name == "Read" && m.GetParameters().Length == 2) readMethod = m;
+                                        else if (m.Name == "ReadCard" && m.GetParameters().Length == 1) readCardMethod = m;
+                                    }
 
-                        selectedList.Add(pool[i]);
+                                    if (readMethod == null || readCardMethod == null)
+                                    {
+                                        coreFallbackReason = "read-methods-missing";
+                                    }
+                                    else
+                                    {
+                                        IRunState run = FlowCoordinator.GetRunState();
+                                        object snapshot = run != null ? readMethod.Invoke(null, new object[] { run, p2 }) : null;
+                                        if (snapshot == null)
+                                        {
+                                            coreFallbackReason = "no-snapshot";
+                                        }
+                                        else
+                                        {
+                                            FieldInfo pcField = AccessTools.Field(snapshot.GetType(), "<PlayerCount>k__BackingField");
+                                            if (pcField != null) pcField.SetValue(snapshot, 1);
 
-                        pickIds.Add(pool[i].Id.ToString());
+                                            ConstructorInfo svCtor = stratValType.GetConstructor(new Type[] { snapshot.GetType() });
+                                            if (svCtor == null)
+                                            {
+                                                foreach (var ctor in stratValType.GetConstructors())
+                                                {
+                                                    if (ctor.GetParameters().Length == 1) { svCtor = ctor; break; }
+                                                }
+                                            }
 
+                                            MethodInfo enchantMethod = null;
+                                            foreach (var m in stratValType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                                            {
+                                                if (m.Name == "Enchant" && m.GetParameters().Length >= 2) { enchantMethod = m; break; }
+                                            }
+
+                                            if (svCtor == null || enchantMethod == null)
+                                            {
+                                                coreFallbackReason = "strategic-value-reflection-failed";
+                                            }
+                                            else
+                                            {
+                                                object svInstance = svCtor.Invoke(new object[] { snapshot });
+                                                Dictionary<CardModel, double> enchantScores = new Dictionary<CardModel, double>();
+                                                bool anyValid = false;
+
+                                                foreach (CardModel c in allCandidates)
+                                                {
+                                                    if (c == null) continue;
+                                                    if ((DateTime.UtcNow - startTime).TotalSeconds >= 2.0)
+                                                    {
+                                                        coreFallbackReason = "timeout";
+                                                        break;
+                                                    }
+
+                                                    object cSnap = readCardMethod.Invoke(null, new object[] { c });
+                                                    if (cSnap != null)
+                                                    {
+                                                        object[] eArgs = (enchantMethod.GetParameters().Length == 2)
+                                                            ? new object[] { cSnap, coreKey }
+                                                            : new object[] { cSnap, coreKey, (double)amount };
+
+                                                        object ret = enchantMethod.Invoke(svInstance, eArgs);
+                                                        double sc = Convert.ToDouble(ret);
+                                                        if (!double.IsNaN(sc) && !double.IsInfinity(sc))
+                                                        {
+                                                            enchantScores[c] = sc;
+                                                            anyValid = true;
+                                                        }
+                                                    }
+                                                }
+
+                                                if (string.IsNullOrEmpty(coreFallbackReason))
+                                                {
+                                                    if (!anyValid || enchantScores.Count == 0)
+                                                    {
+                                                        coreFallbackReason = "all-scores-invalid";
+                                                    }
+                                                    else
+                                                    {
+                                                        // Directive #5.94 T2: Sort all candidates descending by Core Enchant score
+                                                        allCandidates.Sort(delegate(CardModel a, CardModel b) {
+                                                            double sa = enchantScores.ContainsKey(a) ? enchantScores[a] : double.MinValue;
+                                                            double sb = enchantScores.ContainsKey(b) ? enchantScores[b] : double.MinValue;
+                                                            return sb.CompareTo(sa);
+                                                        });
+
+                                                        for (int i = 0; i < allCandidates.Count && selectedList.Count < targetPickCount; i++)
+                                                        {
+                                                            selectedList.Add(allCandidates[i]);
+                                                            pickIds.Add(allCandidates[i].Id.ToString());
+                                                        }
+
+                                                        int topN = Math.Min(5, allCandidates.Count);
+                                                        for (int i = 0; i < topN; i++)
+                                                        {
+                                                            CardModel cm = allCandidates[i];
+                                                            double sc = enchantScores.ContainsKey(cm) ? enchantScores[cm] : double.NaN;
+                                                            coreScoreEntries.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1:F1}", cm.Id.ToString(), sc));
+                                                        }
+                                                        coreSuccess = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            coreFallbackReason = ex.Message;
+                        }
                     }
 
+                    if (!coreSuccess)
+                    {
+                        if (!string.IsNullOrEmpty(coreFallbackReason))
+                        {
+                            GD.Print(string.Format("[AiTeammate][Flow] enchant-core-fallback reason={0}", coreFallbackReason));
+                        }
 
+                        selectedList.Clear();
+                        pickIds.Clear();
+
+                        // Fallback: card_scores descending with attack priority
+                        List<CardModel> pool = (attackCandidates.Count > 0) ? attackCandidates : otherCandidates;
+
+                        pool.Sort(new Comparison<CardModel>(delegate(CardModel a, CardModel b)
+                        {
+                            double sa = FlowCoordinator.GetCardScore(a.Id.ToString());
+                            double sb = FlowCoordinator.GetCardScore(b.Id.ToString());
+                            return sb.CompareTo(sa); // Descending (highest score first)
+                        }));
+
+                        double elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+                        if (elapsed > 3.0 || pool.Count == 0)
+                        {
+                            GD.Print(string.Format("[AiTeammate][Flow] enchant sub-choice timed out or unresolvable ({0:F2}s), tripping to manual", elapsed));
+                            FlowCoordinator.TripSubPageAndHandover(p2, "enchant", fingerprint, "enchant-timeout");
+                            return true;
+                        }
+
+                        for (int i = 0; i < pool.Count && selectedList.Count < targetPickCount; i++)
+                        {
+                            selectedList.Add(pool[i]);
+                            pickIds.Add(pool[i].Id.ToString());
+                        }
+
+                        string pickStrFallback = string.Join(",", pickIds.ToArray());
+                        AutopilotFuse.MarkResolved("enchant", fingerprint);
+                        GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=enchant target={0} pick={0} reason=card-score-highest source=card_scores", pickStrFallback));
+                        FlowCoordinator.LastChildCardChoiceCompleted = true;
+
+                        __result = Task.FromResult<IEnumerable<CardModel>>(selectedList);
+                        return false;
+                    }
 
                     string pickStr = string.Join(",", pickIds.ToArray());
-
+                    string scoresStr = string.Join(",", coreScoreEntries.ToArray());
                     AutopilotFuse.MarkResolved("enchant", fingerprint);
-
-                    GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=enchant target={0} pick={0} reason=card-score-highest source=card_scores", pickStr));
+                    GD.Print(string.Format("[AiTeammate][Flow] p2-choice-resolved kind=enchant pick={0} reason=core-enchant-benefit source=spire-strategist scores={1}", pickStr, scoresStr));
                     FlowCoordinator.LastChildCardChoiceCompleted = true;
 
-
-
-                    IEnumerable<CardModel> res = selectedList;
-
-                    __result = Task.FromResult(res);
-
+                    __result = Task.FromResult<IEnumerable<CardModel>>(selectedList);
                     return false; // Handled programmatically!
 
                 }
@@ -19472,6 +26164,20 @@ catch (Exception ex)
 
                     }
 
+                    if (methodTag == "FromHandForUpgrade")
+                    {
+                        List<CardModel> upgCandidates = new List<CardModel>();
+                        for (int i = 0; i < candidates.Count; i++)
+                        {
+                            CardModel c = candidates[i];
+                            if (c != null && c != source && c.IsUpgradable && !c.IsUpgraded && IsCardOwnedByPlayer(player, c))
+                            {
+                                upgCandidates.Add(c);
+                            }
+                        }
+                        candidates = upgCandidates;
+                    }
+
 
 
                     // Filter if provided
@@ -19506,33 +26212,21 @@ catch (Exception ex)
 
 
 
-                    // PRE-SUBMISSION HARD ASSERTION: All candidates must belong to P2!
-
+                    // PRE-SUBMISSION HARD ASSERTION: All candidates must belong to player!
+                    List<CardModel> validCandidates = new List<CardModel>();
                     for (int i = 0; i < candidates.Count; i++)
-
                     {
-
                         CardModel c = candidates[i];
-
                         if (c == null) continue;
-
                         if (!IsCardOwnedByPlayer(player, c))
-
                         {
-
-                            GD.PrintErr(string.Format("[AiTeammate][Coord] circuit-open: owner-assert-fail candidate card {0} owner mismatch (cardOwner={1}, p2={2})",
-
+                            GD.PrintErr(string.Format("[AiTeammate][Coord] candidate-owner-mismatch: card {0} owner={1} expected={2} - excluding",
                                 c.Id, (c.Owner != null ? c.Owner.NetId.ToString() : "null"), player.NetId));
-
-                            AutopilotFuse.TripCircuit("in-combat-hand", fingerprint);
-
-                            TurnFlowPatches.SwitchControlToPlayer(player.NetId, "owner-assert-fail", false);
-
-                            return null;
-
+                            continue;
                         }
-
+                        validCandidates.Add(c);
                     }
+                    candidates = validCandidates;
 
 
 
@@ -19604,7 +26298,12 @@ catch (Exception ex)
 
                                 if (key.IndexOf("exhaust", StringComparison.OrdinalIgnoreCase) >= 0 ||
 
-                                    key.IndexOf("discard", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    key.IndexOf("discard", StringComparison.OrdinalIgnoreCase) >= 0 ||
+
+                                    // Directive #5.90 T3.1: CARD.BEGONE ("下去！") transforms a hand card
+                                    // into MINION_STRIKE - the chosen card is REPLACED, i.e. sacrificed.
+                                    // Without this the choice sorted highest-first and fed ASCENDERS_BANE.
+                                    key.IndexOf("transform", StringComparison.OrdinalIgnoreCase) >= 0)
 
                                 {
 
@@ -19646,7 +26345,17 @@ catch (Exception ex)
 
                                     sName.IndexOf("SURVIVOR", StringComparison.OrdinalIgnoreCase) >= 0 ||
 
-                                    sName.IndexOf("PREPARED", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    sName.IndexOf("PREPARED", StringComparison.OrdinalIgnoreCase) >= 0 ||
+
+                                    // Directive #5.90 T3.1: transform / remove-family sources are
+                                    // sacrifice choices (the picked card is replaced or purged).
+                                    sName.IndexOf("transform", StringComparison.OrdinalIgnoreCase) >= 0 ||
+
+                                    sName.IndexOf("BEGONE", StringComparison.OrdinalIgnoreCase) >= 0 ||
+
+                                    sName.IndexOf("RECYCLE", StringComparison.OrdinalIgnoreCase) >= 0 ||
+
+                                    sName.IndexOf("PURITY", StringComparison.OrdinalIgnoreCase) >= 0)
 
                                 {
 
@@ -19664,54 +26373,25 @@ catch (Exception ex)
 
 
 
-                    // Sort candidates
-
-                    if (isSacrificeOrDiscard)
-
+                    Dictionary<CardModel, double> strategistScores = new Dictionary<CardModel, double>();
+                    string strategistSource = "card_scores"; string strategistReason = "unavailable";
+                    // Directive #5.89 T1: preferLowest reuses the #5.76 family rule already computed above
+                    // (discard/exhaust -> lowest score first, everything else -> highest score first).
+                    int strategistImputed = 0;
+                    if (EvaluateP2CombatHandCards(player, candidates, methodTag, context, isSacrificeOrDiscard, out strategistScores, out strategistReason, out strategistImputed))
                     {
-
-                        candidates.Sort(delegate(CardModel a, CardModel b)
-
-                        {
-
-                            double sa = FlowCoordinator.GetCardScore(a.Id.ToString());
-
-                            double sb = FlowCoordinator.GetCardScore(b.Id.ToString());
-
-                            int cmp = sa.CompareTo(sb); // lowest first
-
-                            if (cmp != 0) return cmp;
-
-                            return string.Compare(a.Id.ToString(), b.Id.ToString(), StringComparison.Ordinal);
-
-                        });
-
+                        strategistSource = "spirestrategist";
+                        string scoredTag = " scored=" + (candidates.Count - strategistImputed) + "/" + candidates.Count;
+                        foreach (CardModel candidate in candidates) GD.Print("[AiTeammate][Coord] p2-card-eval source=spirestrategist owner=P2 kind=" + methodTag + " card=" + candidate.Id + " score=" + strategistScores[candidate].ToString("F1") + scoredTag);
                     }
-
                     else
-
                     {
-
-                        candidates.Sort(delegate(CardModel a, CardModel b)
-
-                        {
-
-                            double sa = FlowCoordinator.GetCardScore(a.Id.ToString());
-
-                            double sb = FlowCoordinator.GetCardScore(b.Id.ToString());
-
-                            int cmp = sb.CompareTo(sa); // highest first
-
-                            if (cmp != 0) return cmp;
-
-                            return string.Compare(a.Id.ToString(), b.Id.ToString(), StringComparison.Ordinal);
-
-                        });
-
+                        foreach (CardModel candidate in candidates) { strategistScores[candidate] = FlowCoordinator.GetCardScore(candidate.Id.ToString()); GD.Print("[AiTeammate][Coord] p2-card-eval-fallback source=card_scores owner=P2 kind=" + methodTag + " card=" + candidate.Id + " reason=" + strategistReason); }
                     }
-
-
-
+                    if (isSacrificeOrDiscard)
+                        candidates.Sort(delegate(CardModel a, CardModel b) { int cmp = strategistScores[a].CompareTo(strategistScores[b]); return cmp != 0 ? cmp : string.Compare(a.Id.ToString(), b.Id.ToString(), StringComparison.Ordinal); });
+                    else
+                        candidates.Sort(delegate(CardModel a, CardModel b) { int cmp = strategistScores[b].CompareTo(strategistScores[a]); return cmp != 0 ? cmp : string.Compare(a.Id.ToString(), b.Id.ToString(), StringComparison.Ordinal); });
                     int targetCount = (prefs.MaxSelect > 0) ? prefs.MaxSelect : 1;
 
                     if (targetCount > candidates.Count) targetCount = candidates.Count;
@@ -19727,6 +26407,41 @@ catch (Exception ex)
                         selectedCards.Add(candidates[i]);
 
                     }
+
+                    // Pre-submission assertion on selectedCards: must belong to player and reside in player hand
+                    CardPile expectedHand = PileType.Hand.GetPile(player);
+                    List<CardModel> verifiedSelected = new List<CardModel>();
+                    for (int i = 0; i < selectedCards.Count; i++)
+                    {
+                        CardModel sc = selectedCards[i];
+                        bool inHand = PileContainsCard(expectedHand, sc);
+                        bool valid = (sc != null && IsCardOwnedByPlayer(player, sc) && inHand);
+                        if (valid)
+                        {
+                            verifiedSelected.Add(sc);
+                        }
+                        else
+                        {
+                            string scOwnerStr = (sc != null && sc.Owner != null) ? sc.Owner.NetId.ToString() : "null";
+                            string scIdStr = (sc != null) ? sc.Id.ToString() : "null";
+                            GD.PrintErr(string.Format("[AiTeammate][Coord] p2-card-select-assert-failed: card={0} owner={1} in_p2_hand={2}",
+                                scIdStr, scOwnerStr, inHand));
+                        }
+                    }
+                    if (verifiedSelected.Count == 0 && methodTag == "FromHandForUpgrade" && expectedHand != null && expectedHand.Cards != null)
+                    {
+                        // Local candidate rebuild strictly from P2 hand
+                        for (int i = 0; i < expectedHand.Cards.Count; i++)
+                        {
+                            CardModel c = expectedHand.Cards[i];
+                            if (c != null && c != source && c.IsUpgradable && !c.IsUpgraded && IsCardOwnedByPlayer(player, c))
+                            {
+                                verifiedSelected.Add(c);
+                                break;
+                            }
+                        }
+                    }
+                    selectedCards = verifiedSelected;
 
 
 
@@ -19768,19 +26483,14 @@ catch (Exception ex)
 
                         pickIds.Add(sc.Id.ToString());
 
-                        scoreStrs.Add(FlowCoordinator.GetCardScore(sc.Id.ToString()).ToString("F1"));
+                        scoreStrs.Add(strategistScores.ContainsKey(sc) ? strategistScores[sc].ToString("F1") : FlowCoordinator.GetCardScore(sc.Id.ToString()).ToString("F1"));
 
                     }
 
 
 
-                    GD.Print(string.Format("[AiTeammate][Coord] p2-choice-resolved kind=in-combat-hand pick={0} scores={1} reason=card-score",
-
-                        string.Join(",", pickIds.ToArray()),
-
-                        string.Join(",", scoreStrs.ToArray())));
-
-
+                    string selectedScore = selectedCards.Count > 0 && strategistScores.ContainsKey(selectedCards[0]) ? strategistScores[selectedCards[0]].ToString("F1") : (selectedCards.Count > 0 ? FlowCoordinator.GetCardScore(selectedCards[0].Id.ToString()).ToString("F1") : "0.0");
+                    GD.Print("[AiTeammate][Coord] p2-choice-resolved kind=in-combat-hand owner=P2 pick=" + string.Join(",", pickIds.ToArray()) + " source=" + strategistSource + " score=" + selectedScore + " scores=" + string.Join(",", scoreStrs.ToArray()));
 
                     return selectedCards;
 
@@ -19811,6 +26521,131 @@ catch (Exception ex)
             }
 
 
+
+            public static bool EvaluateP2CombatHandCards(Player player, IList cards, string kind, PlayerChoiceContext context, bool preferLowest, out Dictionary<CardModel, double> scores, out string reason, out int imputedCount)
+            {
+                scores = new Dictionary<CardModel, double>(); reason = "unavailable"; imputedCount = 0;
+                if (player == null || player.NetId != TurnCoordinator.GetPlayer2NetId()) { reason = "owner-not-P2"; return false; }
+                try
+                {
+                    Assembly asm = FlowCoordinator.FindLiveSpireStrategistAssembly(); if (asm == null) { reason = "assembly-missing"; return false; }
+                    Type reader = asm.GetType("SpireStrategist.Mod.SnapshotReader"); Type policyType = asm.GetType("SpireStrategist.Core.Policy"); Type optType = asm.GetType("SpireStrategist.Core.DecisionOption");
+                    if (reader == null || policyType == null || optType == null) { reason = "types-missing"; return false; }
+                    MethodInfo read = reader.GetMethods(BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static).FirstOrDefault(m => m.Name == "Read" && m.GetParameters().Length == 2);
+                    MethodInfo readCard = reader.GetMethods(BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static).FirstOrDefault(m => m.Name == "ReadCard" && m.GetParameters().Length == 1);
+                    if (read == null || readCard == null) { reason = "read-signature-missing"; return false; }
+                    object snapshot = read.Invoke(null, new object[] { FlowCoordinator.GetRunState(), player }); if (snapshot == null) { reason = "snapshot-null"; return false; }
+                    // Policy.ScoreCard is selected only for DecisionOption.Kind == "card".
+                    // The requested hand operation remains in the adapter/logging context.
+                    FieldInfo pcField = snapshot.GetType().GetField("<PlayerCount>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (pcField != null && pcField.FieldType == typeof(int)) pcField.SetValue(snapshot, 1);
+                    Type listType = typeof(List<>).MakeGenericType(optType); IList opts = Activator.CreateInstance(listType) as IList; Dictionary<string, CardModel> keys = new Dictionary<string, CardModel>();
+                    foreach (object value in cards)
+                    {
+                        CardModel card = value as CardModel; if (card == null || !IsCardOwnedByPlayer(player, card)) { reason = "candidate-owner-mismatch"; return false; }
+                        object cardSnapshot = readCard.Invoke(null, new object[] { card }); if (cardSnapshot == null) { reason = "card-snapshot-null"; return false; }
+                        string key = "hand:" + card.Id + ":" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(card); keys[key] = card;
+                        opts.Add(Activator.CreateInstance(optType, new object[] { key, card.Id.ToString(), "card", true, cardSnapshot, 0.0, 1, null }));
+                    }
+                    object policy = FlowCoordinator.TryGetStrategistPolicy(asm) ?? FlowCoordinator.CreatePolicyInstance(policyType); MethodInfo eval = policyType.GetMethods(BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance).FirstOrDefault(m => m.Name == "Evaluate" && m.GetParameters().Length == 2);
+                    if (policy == null || eval == null) { reason = "policy-signature-missing"; return false; }
+                    object result = eval.Invoke(policy, new object[] { snapshot, opts }); if (result == null) { reason = "evaluate-null"; return false; }
+                    PropertyInfo op = result.GetType().GetProperty("Options"); IEnumerable resultOptions = op != null ? op.GetValue(result, null) as IEnumerable : null; if (resultOptions == null) { reason = "options-missing"; return false; }
+                    foreach (object item in resultOptions)
+                    {
+                        if (item == null) continue; PropertyInfo kp = item.GetType().GetProperty("Key"); PropertyInfo sp = item.GetType().GetProperty("Score"); string key = kp != null ? kp.GetValue(item, null) as string : null; object raw = sp != null ? sp.GetValue(item, null) : null;
+                        if (key == null || raw == null || !keys.ContainsKey(key)) continue; scores[keys[key]] = Convert.ToDouble(raw);
+                    }
+                    // Directive #5.89 T1: per-candidate fallback instead of the old whole-batch veto.
+                    // A single unmodelled card (e.g. CARD.ASCENDERS_BANE, where Core's HeroPolicy
+                    // returns Score=null) used to throw away the entire Core evaluation and drop every
+                    // card in hand back to card_scores. Now only the unscored candidates get a value.
+                    //
+                    // Directive #5.90 T3.2: unscored cards are no longer all treated as "worst in hand".
+                    // Generated/token finishers (CARD.SOVEREIGN_BLADE / CARD.MINION_STRIKE, static score
+                    // >= 50) used to be imputed anchor-5.0 and ranked BELOW a basic Strike, so P2 gambled
+                    // away its scaling finisher. They are now mapped into the Core range that Core
+                    // actually produced for this hand; curses/statuses/basic cards stay at the bottom.
+                    if (scores.Count != keys.Count)
+                    {
+                        if (scores.Count == 0) { reason = "candidate-score-missing"; scores.Clear(); imputedCount = 0; return false; }
+                        double anchor = 0.0, maxCore = 0.0; bool anchorSet = false;
+                        foreach (double sv in scores.Values)
+                        {
+                            if (!anchorSet) { anchor = sv; maxCore = sv; anchorSet = true; }
+                            else { if (sv < anchor) anchor = sv; if (sv > maxCore) maxCore = sv; }
+                        }
+                        int imputedLocal = 0;
+                        foreach (CardModel card in keys.Values)
+                        {
+                            if (card == null || scores.ContainsKey(card)) continue;
+                            bool eternal = false;
+                            try
+                            {
+                                string cid = card.Id != null ? card.Id.ToString().ToUpperInvariant() : "";
+                                if (cid.IndexOf("ASCENDERS_BANE", StringComparison.Ordinal) >= 0) eternal = true;
+                                if (!eternal)
+                                {
+                                    PropertyInfo kwProp = typeof(CardModel).GetProperty("Keywords", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                    IEnumerable kws = kwProp != null ? kwProp.GetValue(card, null) as IEnumerable : null;
+                                    if (kws != null)
+                                    {
+                                        foreach (object kw in kws)
+                                        {
+                                            if (kw != null && kw.ToString().IndexOf("Eternal", StringComparison.OrdinalIgnoreCase) >= 0) { eternal = true; break; }
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            double v; string tier;
+                            if (eternal)
+                            {
+                                // Eternal / ASCENDERS_BANE can never be removed: park it at the extreme end
+                                // of BOTH directions so it is neither sacrificed nor picked as "best".
+                                v = preferLowest ? (maxCore + 1000000.0) : (anchor - 1000000.0);
+                                tier = "eternal-guard";
+                            }
+                            else
+                            {
+                                double staticScore = 50.0;
+                                try { staticScore = FlowCoordinator.GetCardScore(card.Id != null ? card.Id.ToString() : ""); } catch { }
+                                bool curseOrStatus = false;
+                                try
+                                {
+                                    string typeName = card.Type.ToString();
+                                    curseOrStatus = typeName.IndexOf("Curse", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                    typeName.IndexOf("Status", StringComparison.OrdinalIgnoreCase) >= 0;
+                                }
+                                catch { }
+                                if (curseOrStatus || staticScore <= 20.0)
+                                {
+                                    // Curse / Status / basic Strike-Defend tier: least worth keeping.
+                                    v = anchor - 5.0; tier = "static-low";
+                                }
+                                else
+                                {
+                                    // Generated/token attack-skill: map above anchor using the Core range
+                                    // observed in this hand, so it beats a basic Strike but stays inside
+                                    // the range Core itself considers plausible.
+                                    double span = Math.Max(6.0, maxCore - anchor);
+                                    double normalized = Math.Min(1.0, Math.Max(0.1, (staticScore - 20.0) / 60.0));
+                                    v = anchor + span * normalized; tier = "static-scaled";
+                                }
+                            }
+
+                            scores[card] = v; imputedLocal++;
+                            GD.Print("[AiTeammate][Coord] p2-card-eval-imputed owner=P2 kind=" + kind + " card=" + card.Id + " value=" + v.ToString("F1") + " reason=core-unscored" + (eternal ? " eternal-guard=true" : "") + " tier=" + tier);
+                        }
+                        imputedCount = imputedLocal;
+                        reason = "ok-partial"; return true;
+                    }
+                    imputedCount = 0;
+                    reason = "ok"; return true;
+                }
+                catch (Exception ex) { scores.Clear(); reason = "exception-" + ex.GetType().Name; return false; }
+            }
 
             public static bool FromHandPrefix(PlayerChoiceContext context, Player player, CardSelectorPrefs prefs, Func<CardModel, bool> filter, AbstractModel source, ref Task<IEnumerable<CardModel>> __result)
 
@@ -19861,28 +26696,117 @@ catch (Exception ex)
 
 
             public static bool FromHandForUpgradePrefix(PlayerChoiceContext context, Player player, AbstractModel source, ref Task<CardModel> __result)
-
             {
-
-                var picked = InCombatHandDecide(context, player, default(CardSelectorPrefs), null, source, null, "FromHandForUpgrade");
-
-                if (picked != null)
-
+                try
                 {
+                    CardModel sourceCard = source as CardModel;
+                    ulong scOwnerId = (sourceCard != null && sourceCard.Owner != null) ? sourceCard.Owner.NetId : 0;
 
-                    CardModel best = (picked.Count > 0 ? picked[0] : null);
+                    var currentAction = TurnCoordinator.CurrentExecutingActionInstance;
+                    ulong actionOwner = currentAction != null ? currentAction.OwnerId : 0;
+                    if (actionOwner == 0)
+                    {
+                        actionOwner = TurnCoordinator.CurrentExecutingActionOwnerNetId;
+                    }
+                    if (actionOwner == 0 && scOwnerId != 0)
+                    {
+                        actionOwner = scOwnerId;
+                    }
 
-                    __result = Task.FromResult(best);
+                    ulong p1NetId = TurnCoordinator.GetPlayer1NetId();
+                    ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                    Player p1 = FlowCoordinator.GetPlayer1();
+                    Player p2 = FlowCoordinator.GetPlayer2();
 
-                    return false;
+                    // Directive #5.56 Task 2: Real action/card owner evaluation
+                    bool isP2Upgrade = false;
+                    MegaCrit.Sts2.Core.GameActions.PlayCardAction currentPca = currentAction as MegaCrit.Sts2.Core.GameActions.PlayCardAction;
+                    if (TurnCoordinator.IsP2Target(actionOwner) || (currentPca != null && TurnCoordinator.IsPlayer2(currentPca.Player)))
+                    {
+                        isP2Upgrade = true;
+                    }
+                    else if (sourceCard != null && (TurnCoordinator.IsP2Target(scOwnerId) || TurnCoordinator.IsPlayer2(sourceCard.Owner)))
+                    {
+                        isP2Upgrade = true;
+                    }
+                    else if (player != null && (TurnCoordinator.IsP2Target(player.NetId) || TurnCoordinator.IsPlayer2(player)))
+                    {
+                        isP2Upgrade = true;
+                    }
 
+                    if (isP2Upgrade)
+                    {
+                        // Directive #5.56 Task 2: owner=P2 strictly choose from P2 hand
+                        player = p2 ?? FlowCoordinator.GetPlayer2() ?? player;
+                        ulong choicePlayerId = player != null ? player.NetId : p2NetId;
+                        CardPile p2Hand = player != null ? PileType.Hand.GetPile(player) : (p2 != null ? PileType.Hand.GetPile(p2) : null);
+
+                        var picked = InCombatHandDecide(context, player, default(CardSelectorPrefs), null, source, null, "FromHandForUpgrade");
+                        CardModel best = (picked != null && picked.Count > 0) ? picked[0] : null;
+
+                        ulong selectedOwner = (best != null && best.Owner != null) ? best.Owner.NetId : (best != null ? p2NetId : 0);
+
+                        // Directive #5.56 Task 3: Mandatory diagnostic check log
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-upgrade-owner-check actionOwner={0} choicePlayer={1} selectedOwner={2}", actionOwner, choicePlayerId, selectedOwner));
+
+                        // Directive #5.56 Task 2 & 3: Defensive validation & Fail-closed
+                        if (best != null)
+                        {
+                            bool inHand = PileContainsCard(p2Hand, best);
+                            bool ownerMatchesP2 = (best.Owner == null || best.Owner.NetId == p2NetId || TurnCoordinator.IsPlayer2(best.Owner));
+                            bool actionMatchesP2 = (actionOwner == 0 || actionOwner == p2NetId || TurnCoordinator.IsP2Target(actionOwner));
+                            bool choiceMatchesP2 = (choicePlayerId == p2NetId || TurnCoordinator.IsP2Target(choicePlayerId));
+
+                            if (!ownerMatchesP2 || !inHand || !actionMatchesP2 || !choiceMatchesP2)
+                            {
+                                GD.PrintErr(string.Format("[AiTeammate][Coord] p2-upgrade-owner-mismatch-blocked actionOwner={0} choicePlayer={1} selectedOwner={2} inHand={3} reason=owner-inconsistent fail-closed", actionOwner, choicePlayerId, selectedOwner, inHand));
+                                ActionQueueOwnerPatch.TryCancelAction(currentAction);
+                                __result = Task.FromResult<CardModel>(null);
+                                return false;
+                            }
+                        }
+
+                        __result = Task.FromResult<CardModel>(best);
+                        return false;
+                    }
+                    else
+                    {
+                        // Directive #5.56 Task 2: P1 upgrade path
+                        CardPile p1Hand = player != null ? PileType.Hand.GetPile(player) : (p1 != null ? PileType.Hand.GetPile(p1) : null);
+                        int p1CandidatesCount = 0;
+                        if (p1Hand != null && p1Hand.Cards != null)
+                        {
+                            for (int i = 0; i < p1Hand.Cards.Count; i++)
+                            {
+                                CardModel c = p1Hand.Cards[i];
+                                if (c != null && c != source && c.IsUpgradable && !c.IsUpgraded && (c.Owner == null || c.Owner.NetId == p1NetId || !TurnCoordinator.IsPlayer2(c.Owner)))
+                                {
+                                    p1CandidatesCount++;
+                                }
+                            }
+                        }
+
+                        // Directive #5.56 Task 2: P1 candidates=0 must NOT continue to native P1 choice
+                        if (p1CandidatesCount == 0)
+                        {
+                            ulong p1PlayerId = player != null ? player.NetId : p1NetId;
+                            GD.Print(string.Format("[AiTeammate][Coord] p1-upgrade-zero-candidates actionOwner={0} player={1}: skipping native choice", actionOwner, p1PlayerId));
+                            __result = Task.FromResult<CardModel>(null);
+                            return false;
+                        }
+
+                        // P1 has candidates, pass through to native P1 manual choice
+                        ChoiceSuppressionPatches.LastP1ChoicePassThroughTime = DateTime.UtcNow;
+                        return true;
+                    }
                 }
-
-                return true;
-
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][Coord] FromHandForUpgradePrefix fail-closed exception: " + ex);
+                    __result = Task.FromResult<CardModel>(null);
+                    return false;
+                }
             }
-
-
 
             public static bool FromCombatPile4Prefix(PlayerChoiceContext context, CardPile pile, Player player, CardSelectorPrefs prefs, ref Task<IEnumerable<CardModel>> __result)
 
@@ -19959,7 +26883,11 @@ catch (Exception ex)
                         {
 
                             TurnCoordinator.P2PendingChoiceCount++;
-
+                        }
+                        ulong p1NetId = TurnCoordinator.GetPlayer1NetId();
+                        if (player.NetId == p1NetId || TurnCoordinator.IsPlayer1(player))
+                        {
+                            TurnCoordinator.RegisterP1Choice(__result, "ReserveChoiceId");
                         }
 
                     }
@@ -19991,6 +26919,41 @@ catch (Exception ex)
                     if (player != null)
 
                     {
+                        ulong p1NetId = TurnCoordinator.GetPlayer1NetId();
+                        if (player.NetId == p1NetId || TurnCoordinator.IsPlayer1(player))
+                        {
+                            TurnCoordinator.ReleaseP1Choice(choiceId, "sync-local-choice");
+
+                            // Cross-owner check for P1: cannot submit cards owned by P2
+                            if (result != null)
+                            {
+                                IEnumerable<CardModel> p1Cards = null;
+                                try
+                                {
+                                    string ctName = result.ChoiceType.ToString();
+                                    if (ctName.IndexOf("Combat", StringComparison.OrdinalIgnoreCase) >= 0) p1Cards = result.AsCombatCards();
+                                    else if (ctName.IndexOf("Deck", StringComparison.OrdinalIgnoreCase) >= 0) p1Cards = result.AsDeckCards();
+                                    else if (ctName.IndexOf("Canonical", StringComparison.OrdinalIgnoreCase) >= 0) p1Cards = result.AsCanonicalCards();
+                                    else if (ctName.IndexOf("Mutable", StringComparison.OrdinalIgnoreCase) >= 0) p1Cards = result.AsMutableCards();
+                                }
+                                catch { p1Cards = null; }
+                                if (p1Cards != null)
+                                {
+                                    foreach (var c in p1Cards)
+                                    {
+                                        if (c == null) continue;
+                                        if (!InCombatHandSelectPatch.IsCardOwnedByPlayer(player, c))
+                                        {
+                                            string cOwnerStr = (c.Owner != null) ? c.Owner.NetId.ToString() : "null";
+                                            GD.PrintErr(string.Format("[AiTeammate][Coord] circuit-open: cross-owner-block rejected P1 choiceId={0} card={1} (card owner={2}, submitting player=P1)",
+                                                choiceId, c.Id, cOwnerStr));
+                                            AutopilotFuse.TripCircuit("choice-submission", "cross-owner-block-p1");
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
 
@@ -20357,6 +27320,8 @@ catch (Exception ex)
 
             {
 
+                TurnCoordinator.CheckAndRecoverRunIdentity("RunManager.EnterRoom");
+
                 TurnCoordinator.GuardPendingChoicesBeforeLeave("RunManager.EnterRoom");
                 TurnCoordinator.OnRoomEnterBegin("RunManager.EnterRoom");
 
@@ -20423,6 +27388,8 @@ catch (Exception ex)
 
             double ms = (DateTime.UtcNow - __state).TotalMilliseconds;
 
+            TurnCoordinator.P1InputLockDepth = Math.Max(0, TurnCoordinator.P1InputLockDepth - 1);
+            GD.Print("[AiTeammate][Coord] input-lock-window end=potion");
             TurnCoordinator.PotionRebuildMs += ms;
 
         }
@@ -20558,6 +27525,7 @@ catch (Exception ex)
                         FlowCoordinator.SpireStrategistAvailable = true;
 
                         FlowCoordinator.SpireStrategistAssembly = asm;
+                        GD.Print("[AiTeammate] SpireStrategist assembly-loaded path=" + (asm.Location ?? "in-memory") + " version=" + asm.GetName().Version + " fullName=" + asm.FullName);
 
                         return;
 
@@ -20681,10 +27649,15 @@ catch (Exception ex)
 
                         FlowCoordinator.SpireStrategistAssembly = loaded;
 
-                        GD.Print("[AiTeammate] Preloaded SpireStrategist assembly into game context: " + targetDll);
+                        GD.Print("[AiTeammate] SpireStrategist assembly-loaded path=" + System.IO.Path.GetFullPath(targetDll) + " version=" + loaded.GetName().Version + " fullName=" + loaded.FullName);
 
                     }
 
+                }
+                else
+                {
+                    GD.PrintErr("[AiTeammate] SpireStrategist assembly-load-failed reason=dll-not-found searched=mods/SpireStrategist,mods/SpireStrategist-main/mod");
+                    FlowCoordinator.SpireStrategistAvailable = false;
                 }
 
             }
@@ -20753,7 +27726,11 @@ catch (Exception ex)
 
                         GD.Print("[AiTeammate] Preloading CombatSolver assembly from: " + files[0]);
 
-                        Assembly.LoadFrom(files[0]);
+                        Assembly loadedCs = Assembly.LoadFrom(files[0]);
+                        if (loadedCs != null)
+                        {
+                            CombatSolverInMemoryPatcher.ApplyIfNeeded(loadedCs);
+                        }
 
                         break;
 
@@ -20790,6 +27767,12 @@ catch (Exception ex)
                 TryPreloadCombatSolver();
 
             TryPreloadSpireStrategist();
+
+                Assembly csAsmEnsure = TurnCoordinator.FindCombatSolverAssembly();
+                if (csAsmEnsure != null)
+                {
+                    CombatSolverInMemoryPatcher.ApplyIfNeeded(csAsmEnsure);
+                }
 
                 if (_harmonyInstance == null) _harmonyInstance = new Harmony("com.antigravity.sts2.aiteammate");
 
@@ -20905,7 +27888,7 @@ catch (Exception ex)
 
                         }
 
-                         string defaultJson = "{\n  \"coordinationEnabled\": false,\n  \"waitEnabled\": false,\n  \"holdEnabled\": false,\n  \"midturnEnabled\": false,\n  \"autoRouteFollowEnabled\": true,\n  \"autoCardRewardEnabled\": true,\n  \"autoEventEnabled\": true,\n  \"autoRestSiteEnabled\": true,\n  \"autoNeowEnabled\": true,\n  \"shopCardRemovalEnabled\": true,\n  \"floatingEndTurnEnabled\": false,\n  \"fixedP1CombatControl\": true\n}";
+                         string defaultJson = "{\n  \"coordinationEnabled\": false,\n  \"waitEnabled\": false,\n  \"holdEnabled\": false,\n  \"midturnEnabled\": false,\n  \"autoRouteFollowEnabled\": true,\n  \"autoCardRewardEnabled\": true,\n  \"autoEventEnabled\": true,\n  \"autoRestSiteEnabled\": true,\n  \"autoNeowEnabled\": true,\n  \"autoShopEnabled\": true,\n  \"shopCardRemovalEnabled\": true,\n  \"floatingEndTurnEnabled\": false,\n  \"fixedP1CombatControl\": true,\n  \"showCombatSolverUi\": false,\n  \"showLocalMultiControlUi\": false\n}";
 
                         System.IO.File.WriteAllText(settingsPath, defaultJson);
 
@@ -20980,6 +27963,8 @@ catch (Exception ex)
                     shopRemoval = ParseBoolSetting(content, "shopCardRemovalEnabled", true);
                      floatingEndTurn = ParseBoolSetting(content, "floatingEndTurnEnabled", false);
                      fixedP1CombatControl = ParseBoolSetting(content, "fixedP1CombatControl", true);
+                     FlowCoordinator.ShowCombatSolverUi = ParseBoolSetting(content, "showCombatSolverUi", false);
+                     FlowCoordinator.ShowLocalMultiControlUi = ParseBoolSetting(content, "showLocalMultiControlUi", false);
 
                 }
 
@@ -21006,35 +27991,32 @@ catch (Exception ex)
                 FlowCoordinator.AutoNeowEnabled = autoNeow;
 
                 FlowCoordinator.AutoShopEnabled = autoShop;
+                if (!FlowCoordinator.AutoShopEnabled)
+                {
+                    GD.PrintErr("[AiTeammate] WARNING: autoShopEnabled is FALSE! P2 autonomous shopping is disabled!");
+                }
                 FlowCoordinator.ShopCardRemovalEnabled = shopRemoval;
                 FlowCoordinator.FloatingEndTurnEnabled = floatingEndTurn;
-                 TurnCoordinator.FixedP1CombatControl = fixedP1CombatControl;
+                TurnCoordinator.FixedP1CombatControl = fixedP1CombatControl;
 
-
-
-                 GD.Print(string.Format("[AiTeammate] config: coordination={0} wait={1} hold={2} midturn={3} autoRoute={4} autoCard={5} autoEvent={6} autoRest={7} autoNeow={8} shopRemoval={9} floatingEndTurn={10} fixedP1CombatControl={11}",
-
+                GD.Print(string.Format("[AiTeammate] config: coordination={0} wait={1} hold={2} midturn={3} autoRoute={4} autoCard={5} autoEvent={6} autoRest={7} autoNeow={8} autoShop={9} shopRemoval={10} floatingEndTurn={11} fixedP1CombatControl={12} showSolverUi={13} showLmcUi={14}",
                     TurnCoordinator.CoordinationEnabled,
-
                     TurnCoordinator.WaitEnabled,
-
                     TurnCoordinator.HoldEnabled,
-
                     TurnCoordinator.MidturnEnabled,
-
                     FlowCoordinator.AutoRouteFollowEnabled,
-
                     FlowCoordinator.AutoCardRewardEnabled,
-
                     FlowCoordinator.AutoEventEnabled,
-
                     FlowCoordinator.AutoRestSiteEnabled,
-
                     FlowCoordinator.AutoNeowEnabled,
-
-                     FlowCoordinator.ShopCardRemovalEnabled,
-                     FlowCoordinator.FloatingEndTurnEnabled,
-                     TurnCoordinator.FixedP1CombatControl));
+                    FlowCoordinator.AutoShopEnabled,
+                    FlowCoordinator.ShopCardRemovalEnabled,
+                    FlowCoordinator.FloatingEndTurnEnabled,
+                    TurnCoordinator.FixedP1CombatControl,
+                    FlowCoordinator.ShowCombatSolverUi,
+                    FlowCoordinator.ShowLocalMultiControlUi));
+                FlowCoordinator.ApplyCombatSolverUiVisibility("settings-loaded");
+                FlowCoordinator.ApplyLocalMultiControlUiVisibility("settings-loaded");
                  GD.Print("[AiTeammate][Coord] fixed-p1-combat-control enabled=" + TurnCoordinator.FixedP1CombatControl.ToString().ToLowerInvariant());
 
             }
@@ -21068,26 +28050,17 @@ catch (Exception ex)
                  TurnCoordinator.FixedP1CombatControl = true;
                  GD.Print("[AiTeammate][Coord] fixed-p1-combat-control enabled=true");
 
-                GD.Print(string.Format("[AiTeammate] config: coordination={0} wait={1} hold={2} midturn={3} autoRoute={4} autoCard={5} autoEvent={6} autoRest={7} autoNeow={8} shopRemoval={9}",
-
+                GD.Print(string.Format("[AiTeammate] config: coordination={0} wait={1} hold={2} midturn={3} autoRoute={4} autoCard={5} autoEvent={6} autoRest={7} autoNeow={8} autoShop={9} shopRemoval={10}",
                     TurnCoordinator.CoordinationEnabled,
-
                     TurnCoordinator.WaitEnabled,
-
                     TurnCoordinator.HoldEnabled,
-
                     TurnCoordinator.MidturnEnabled,
-
                     FlowCoordinator.AutoRouteFollowEnabled,
-
                     FlowCoordinator.AutoCardRewardEnabled,
-
                     FlowCoordinator.AutoEventEnabled,
-
                     FlowCoordinator.AutoRestSiteEnabled,
-
                     FlowCoordinator.AutoNeowEnabled,
-
+                    FlowCoordinator.AutoShopEnabled,
                     FlowCoordinator.ShopCardRemovalEnabled));
 
             }
@@ -21248,6 +28221,18 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 try
                 {
+                    Type rewardButtonType = AccessTools.TypeByName("MegaCrit.Sts2.Core.Nodes.Rewards.NRewardButton");
+                    MethodInfo reload = rewardButtonType != null ? AccessTools.Method(rewardButtonType, "Reload") : null;
+                    if (reload != null)
+                    {
+                        harmony.Patch(reload, null, new HarmonyMethod(typeof(FlowPatches.RewardRuntimeGatePatches), "RewardButtonReloadPostfix"));
+                        GD.Print("[AiTeammate] Patched NRewardButton.Reload (P2 potion reward attribution UI).");
+                    }
+                }
+                catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: NRewardButton.Reload: " + ex); }
+
+                try
+                {
                     MethodInfo completedSignal = AccessTools.Method(typeof(NRewardsScreen), "EmitSignalCompleted");
                     if (completedSignal != null)
                     {
@@ -21311,6 +28296,22 @@ private static void PatchFlowCoordinator(Harmony harmony)
                         harmony.Patch(updateState, null, new HarmonyMethod(typeof(FlowPatches.RewardRuntimeGatePatches), "RewardsScreenUpdatePostfix"));
                 }
                 catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: NRewardsScreen.UpdateScreenState: " + ex); }
+
+                try
+                {
+                    MethodInfo skipFrom = AccessTools.Method(typeof(NRewardsScreen), "RewardSkippedFrom");
+                    if (skipFrom != null)
+                        harmony.Patch(skipFrom, null, new HarmonyMethod(typeof(FlowPatches.RewardRuntimeGatePatches), "RewardSkippedFromPostfix"));
+                }
+                catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: NRewardsScreen.RewardSkippedFrom: " + ex); }
+
+                try
+                {
+                    MethodInfo afterClosed = AccessTools.Method(typeof(NRewardsScreen), "AfterOverlayClosed");
+                    if (afterClosed != null)
+                        harmony.Patch(afterClosed, null, new HarmonyMethod(typeof(FlowPatches.RewardRuntimeGatePatches), "AfterOverlayClosedPostfix"));
+                }
+                catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: NRewardsScreen.AfterOverlayClosed: " + ex); }
 
                 try
                 {
@@ -21400,6 +28401,23 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: AbstractRoom.Enter: " + ex.Message); }
 
 
+
+                try
+
+                {
+
+                    MethodInfo mRmLaunch = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Runs.RunManager), "Launch");
+                    if (mRmLaunch != null)
+                    {
+                        harmony.Patch(mRmLaunch,
+                            new HarmonyMethod(typeof(FlowPatches.RunStartLifecyclePatches), "RunManagerLaunchPrefix"),
+                            new HarmonyMethod(typeof(FlowPatches.RunStartLifecyclePatches), "RunManagerLaunchPostfix"));
+                        GD.Print("[AiTeammate] Patched RunManager.Launch (Run Start Identity Reset).");
+                    }
+
+                }
+
+                catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: RunManager.Launch: " + ex.Message); }
 
                 try
 
@@ -21580,10 +28598,28 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 }
                 catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: CardSelectCmd deck patches: " + ex.Message); }
 
+                // Directive #5.53: Hook CardSelectCmdProbePatch to all CardSelectCmd static methods
                 try
-
                 {
+                    Type cardSelectCmdType = typeof(MegaCrit.Sts2.Core.Commands.CardSelectCmd);
+                    foreach (MethodInfo m in cardSelectCmdType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                    {
+                        if (m.Name == "Reset" || m.Name == "ShouldSelectLocalCard" || m.Name == "ReportSoftlock" || m.Name.StartsWith("get_") || m.Name == ".cctor") continue;
+                        try
+                        {
+                            harmony.Patch(m, new HarmonyMethod(typeof(FlowPatches.CardSelectCmdProbePatch), "Prefix"), null);
+                            GD.Print("[AiTeammate] Attached probe to CardSelectCmd." + m.Name);
+                        }
+                        catch (Exception exM)
+                        {
+                            GD.PrintErr("[AiTeammate] Failed to attach probe to " + m.Name + ": " + exM.Message);
+                        }
+                    }
+                }
+                catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: CardSelectCmd probe: " + ex.Message); }
 
+                try
+                {
                     MethodInfo simpleGridMethod = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.CardSelectCmd), "FromSimpleGrid", new Type[] {
                         typeof(object), typeof(IEnumerable<CardModel>), typeof(Player), typeof(object)
                     }) ?? AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.CardSelectCmd), "FromSimpleGrid");
@@ -21931,6 +28967,52 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
+                // Directive #5.97 Task 2: Harmony patches for Local Multi-Control UI visibility
+                Type switchButtonsType = AccessTools.TypeByName("LocalMultiControl.Scripts.Patch.LocalCombatSwitchButtons");
+                if (switchButtonsType != null)
+                {
+                    try
+                    {
+                        MethodInfo mRefresh = AccessTools.Method(switchButtonsType, "Refresh", new Type[] { typeof(MegaCrit.Sts2.Core.Nodes.Combat.NCombatUi) });
+                        if (mRefresh != null)
+                        {
+                            harmony.Patch(mRefresh, null, new HarmonyMethod(typeof(FlowPatches.DraCombatSwitchButtonsPatch), "Postfix"));
+                            GD.Print("[AiTeammate] Patched LocalCombatSwitchButtons.Refresh (UI visibility toggle).");
+                        }
+                    }
+                    catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: LocalCombatSwitchButtons.Refresh: " + ex.Message); }
+                }
+
+                Type playerStateSwitchType = AccessTools.TypeByName("LocalMultiControl.Scripts.Patch.LocalMultiplayerPlayerStateSwitchUi");
+                if (playerStateSwitchType != null)
+                {
+                    try
+                    {
+                        MethodInfo mStateRefresh = AccessTools.Method(playerStateSwitchType, "Refresh");
+                        if (mStateRefresh != null)
+                        {
+                            harmony.Patch(mStateRefresh, null, new HarmonyMethod(typeof(FlowPatches.DraPlayerStateSwitchUiPatch), "Postfix"));
+                            GD.Print("[AiTeammate] Patched LocalMultiplayerPlayerStateSwitchUi.Refresh (UI visibility toggle).");
+                        }
+                    }
+                    catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: LocalMultiplayerPlayerStateSwitchUi.Refresh: " + ex.Message); }
+                }
+
+                Type ghostHandsType = AccessTools.TypeByName("LocalMultiControl.Scripts.Runtime.LocalGhostHandsOverlay");
+                if (ghostHandsType != null)
+                {
+                    try
+                    {
+                        MethodInfo mGhostProcess = AccessTools.Method(ghostHandsType, "_Process");
+                        if (mGhostProcess != null)
+                        {
+                            harmony.Patch(mGhostProcess, null, new HarmonyMethod(typeof(FlowPatches.DraGhostHandsOverlayPatch), "Postfix"));
+                            GD.Print("[AiTeammate] Patched LocalGhostHandsOverlay._Process (UI visibility toggle).");
+                        }
+                    }
+                    catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: LocalGhostHandsOverlay._Process: " + ex.Message); }
+                }
+
                 Type draNEventRoomPatchType = AccessTools.TypeByName("LocalMultiControl.Scripts.Patch.NEventRoomPatch");
 
                 if (draNEventRoomPatchType != null)
@@ -22171,6 +29253,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
             }
 
             HookedGroups.Add("flow-coordinator");
+            if (!HookedGroups.Contains("p2-potion-reward-ui")) HookedGroups.Add("p2-potion-reward-ui");
 
                 }
 
@@ -22196,9 +29279,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
             GD.Print("[AiTeammate] ==========================================");
 
-            GD.Print("[AiTeammate] Build Fingerprint: Directive #5.42 | Built: 2026-11-01");
-
-            GD.Print("[AiTeammate] Initializing CombatSolver 2P Background AI v3.1 (Directive #5.24; button-lineage=#5.22-R2)");
+            GD.Print("[AiTeammate] Build Fingerprint: Directive #5.98 — 2026-11-09 Pure in-memory runtime injection for all 22 CombatSolver patches");
+            GD.Print("[AiTeammate] Initializing CombatSolver 2P Background AI v3.1 (Directive #5.58-C; button-lineage=#5.22-R2)");
             GD.Print("[AiTeammate][Coord] lifeline-armed mode=independent-timer timeout=20s heartbeat=5s");
 
 
@@ -22222,12 +29304,19 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
             _harmonyInstance = harmony;
             FloatingEndTurnOverlay.Initialize();
+            P2HandPreviewOverlay.Initialize();
+            AiTeammateUiToggleOverlay.Initialize();
 
 
 
             // Preload CombatSolver assembly before running patch groups
 
             TryPreloadCombatSolver();
+
+            // Directive #5.91 T1: force the CombatSolver per-layer time budget to a level where the
+            // completed_turns=0 HEAP_RECLAIM GC burst cannot truncate the current turn at play_depth=1.
+            // Placed after the preload so CombatSolver.SolverSettings.Current is already resolvable.
+            TurnCoordinator.EnsureOptimalCombatSolverSettings(true);
 
             TryPreloadSpireStrategist();
 
@@ -22249,6 +29338,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                         GD.Print("[AiTeammate] Detected CombatSolver assembly load via AppDomain event. Hooking now...");
 
+                        CombatSolverInMemoryPatcher.ApplyIfNeeded(args.LoadedAssembly);
                         EnsureCombatSolverPatched();
 
                     }
@@ -22297,7 +29387,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
             string failedStr = FailedGroups.Count > 0 ? string.Join(",", FailedGroups.ToArray()) : "none";
 
-            GD.Print("[AiTeammate] INIT-SUMMARY hooked=" + hookedStr + " failed=" + failedStr);
+            GD.Print("[AiTeammate] INIT-SUMMARY hooked=" + hookedStr + " failed=" + failedStr + " event-fsm=5.84 states=PendingInitial,Submitted,WaitingSubPage,PendingNextChoice,Completed,FailedOpen");
 
             GD.Print("[AiTeammate] ==========================================");
 
@@ -22443,6 +29533,90 @@ private static void PatchFlowCoordinator(Harmony harmony)
             catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] solver-binding log failed " + label + ": " + ex.Message); }
         }
 
+
+        private static Type FindCombatSolverType(Assembly csAsm, string simpleName)
+        {
+            if (csAsm == null) return null;
+            try
+            {
+                Type[] types = csAsm.GetTypes();
+                for (int i = 0; i < types.Length; i++)
+                {
+                    if (types[i] != null && (types[i].Name == simpleName || types[i].FullName == simpleName || types[i].FullName.EndsWith("." + simpleName)))
+                        return types[i];
+                }
+            }
+            catch (ReflectionTypeLoadException rtle)
+            {
+                if (rtle.Types != null)
+                {
+                    for (int i = 0; i < rtle.Types.Length; i++)
+                    {
+                        if (rtle.Types[i] != null && (rtle.Types[i].Name == simpleName || rtle.Types[i].FullName == simpleName || rtle.Types[i].FullName.EndsWith("." + simpleName)))
+                            return rtle.Types[i];
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static void PatchCombatSolverInsuranceFallbacks(Harmony harmony, Assembly csAsm)
+        {
+            if (harmony == null || csAsm == null) return;
+            try
+            {
+                // 1. SolverController.get_IsMultiplayerSession (Prefix: return false)
+                Type scType = csAsm.GetType("CombatSolver.SolverController") ?? AccessTools.TypeByName("CombatSolver.SolverController");
+                if (scType != null)
+                {
+                    MethodInfo isMultiplayer = AccessTools.PropertyGetter(scType, "IsMultiplayerSession") ?? AccessTools.Method(scType, "get_IsMultiplayerSession");
+                    if (isMultiplayer != null)
+                    {
+                        harmony.Patch(isMultiplayer, new HarmonyMethod(typeof(CombatSolverInsurancePatches), "IsMultiplayerSessionPrefix"), null, null, null);
+                        GD.Print("[AiTeammate][MemPatch] Installed Harmony insurance fallback: SolverController.get_IsMultiplayerSession");
+                    }
+                }
+
+                // 2. BattleDamageTracker.GetSinglePlayer (Prefix: return state.Players.Last())
+                Type bdtType = csAsm.GetType("CombatSolver.BattleDamageTracker") ?? AccessTools.TypeByName("CombatSolver.BattleDamageTracker");
+                if (bdtType != null)
+                {
+                    MethodInfo getSinglePlayer = AccessTools.Method(bdtType, "GetSinglePlayer");
+                    if (getSinglePlayer != null)
+                    {
+                        harmony.Patch(getSinglePlayer, new HarmonyMethod(typeof(CombatSolverInsurancePatches), "GetSinglePlayerPrefix"), null, null, null);
+                        GD.Print("[AiTeammate][MemPatch] Installed Harmony insurance fallback: BattleDamageTracker.GetSinglePlayer");
+                    }
+                }
+
+                // 3 & 4. PredictionForkContext.Register and RequireRemap
+                Type forkCtxType = csAsm.GetType("CombatSolver.PredictionForkContext") 
+                                   ?? AccessTools.TypeByName("CombatSolver.PredictionForkContext")
+                                   ?? FindCombatSolverType(csAsm, "PredictionForkContext");
+                if (forkCtxType != null)
+                {
+                    MethodInfo regMethod = AccessTools.Method(forkCtxType, "Register");
+                    if (regMethod != null)
+                    {
+                        harmony.Patch(regMethod, null, null, null, new HarmonyMethod(typeof(CombatSolverInsurancePatches), "RegisterFinalizer"));
+                        GD.Print("[AiTeammate][MemPatch] Installed Harmony insurance fallback: PredictionForkContext.Register");
+                    }
+
+                    MethodInfo remapMethod = AccessTools.Method(forkCtxType, "RequireRemap");
+                    if (remapMethod != null)
+                    {
+                        harmony.Patch(remapMethod, null, null, null, new HarmonyMethod(typeof(CombatSolverInsurancePatches), "RequireRemapFinalizer"));
+                        GD.Print("[AiTeammate][MemPatch] Installed Harmony insurance fallback: PredictionForkContext.RequireRemap");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][MemPatch] Failed to install CombatSolver insurance fallbacks: " + ex.Message);
+            }
+        }
+
         private static void PatchCombatSolverAndTurnFlow(Harmony harmony)
 
         {
@@ -22464,8 +29638,10 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
             if (solverControllerType != null)
-
             {
+                // Directive #5.98 Task 1 & 2: In-memory PE .text section patch and Harmony insurance fallbacks
+                CombatSolverInMemoryPatcher.ApplyIfNeeded(solverControllerType.Assembly);
+                PatchCombatSolverInsuranceFallbacks(harmony, solverControllerType.Assembly);
 
                 // Directive #3.9.5: Triple-hooking deployment pipeline (StartFullAutoDeployment, StartDeployment, DeployCurrentTurn)
 
@@ -22474,6 +29650,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 if (fullAutoMethod != null)
 
                 {
+
+                    TurnCoordinator.StartFullAutoDeploymentMethod = fullAutoMethod;
 
                     LogCombatSolverBinding("StartFullAutoDeployment", fullAutoMethod);
 
@@ -22491,6 +29669,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 {
 
+                    TurnCoordinator.StartDeploymentMethod = startDeployMethod;
+
                     LogCombatSolverBinding("StartDeployment", startDeployMethod);
 
                     harmony.Patch(startDeployMethod, new HarmonyMethod(typeof(TurnFlowPatches), "StartDeploymentPrefix"));
@@ -22500,6 +29680,28 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 }
 
 
+
+                // Directive #5.97 Task 2: CombatSolver Overlay Visibility hooks
+                Type overlayType = AccessTools.TypeByName("CombatSolver.SolverOverlay");
+                if (overlayType != null)
+                {
+                    try
+                    {
+                        MethodInfo showLayerMethod = AccessTools.Method(overlayType, "ShowLayer");
+                        if (showLayerMethod != null)
+                        {
+                            harmony.Patch(showLayerMethod, null, new HarmonyMethod(typeof(CoordinatorPatches), "CombatSolverOverlayVisibilityPostfix"));
+                            GD.Print("[AiTeammate] Hooked SolverOverlay.ShowLayer (UI visibility guard).");
+                        }
+                        MethodInfo ensureCreatedMethod = AccessTools.Method(overlayType, "EnsureCreated");
+                        if (ensureCreatedMethod != null)
+                        {
+                            harmony.Patch(ensureCreatedMethod, null, new HarmonyMethod(typeof(CoordinatorPatches), "CombatSolverOverlayVisibilityPostfix"));
+                            GD.Print("[AiTeammate] Hooked SolverOverlay.EnsureCreated (UI visibility guard).");
+                        }
+                    }
+                    catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: SolverOverlay hooks: " + ex.Message); }
+                }
 
                 var deployMethod = AccessTools.Method(solverControllerType, "DeployCurrentTurn");
 
@@ -22555,6 +29757,10 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     harmony.Patch(cancelDeployMethod, null, new HarmonyMethod(typeof(TurnFlowPatches), "CompleteDeploymentPostfix"));
 
                     GD.Print("[AiTeammate] Hooked SolverController.CancelDeployment.");
+
+                // Directive #5.87: ally/player-targeted multiplayer cards abort the solver's replay
+                // mirror because CardPlay.Target is null in single-player simulation.
+                CombatSolverMirrorFallbackPatches.TryInstall(harmony);
 
                 }
 
@@ -23174,6 +30380,64 @@ private static void PatchFlowCoordinator(Harmony harmony)
             }
             catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: BackendEnqueueConfirmed: " + ex.Message); }
 
+            // Directive #5.46: Hook CardCmd.Upgrade for rest upgrade backend confirmation
+            try
+            {
+                var upgradeMethod = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Commands.CardCmd), "Upgrade", new Type[] { typeof(CardModel) });
+                if (upgradeMethod != null)
+                {
+                    harmony.Patch(upgradeMethod, null, new HarmonyMethod(typeof(FlowPatches.CardSelectFromDeckForUpgradePatch), "CardCmdUpgradePostfix"));
+                    GD.Print("[AiTeammate][Coord] Hooked CardCmd.Upgrade (rest upgrade confirmation #5.46).");
+                }
+            }
+            catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: CardCmd.Upgrade: " + ex.Message); }
+
+            // Directive #5.69: Hook LocalContext.IsMine(CardModel) to enforce native remote branch for P2 transforms
+            try
+            {
+                var isMineCard = AccessTools.Method(typeof(MegaCrit.Sts2.Core.Context.LocalContext), "IsMine", new Type[] { typeof(CardModel) });
+                if (isMineCard != null)
+                {
+                    harmony.Patch(isMineCard, new HarmonyMethod(typeof(CoordinatorPatches), "LocalContextCardIsMinePrefix"));
+                    GD.Print("[AiTeammate][Coord] Hooked LocalContext.IsMine(CardModel) (P2 transform remote branch guard #5.69).");
+                }
+            }
+            catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: LocalContext.IsMine: " + ex.Message); }
+
+            // Directive #5.86 (Task 1A): the #5.69 prefix above is dead (IsMine is 25 bytes and gets
+            // inlined), so rewrite the call site inside CardCmd.<Transform>d__13.MoveNext instead.
+            try
+            {
+                var transformStates = new List<Type>();
+                Type primaryTransformState = AccessTools.Inner(typeof(CardCmd), "<Transform>d__13");
+                if (primaryTransformState != null)
+                {
+                    transformStates.Add(primaryTransformState);
+                }
+                else
+                {
+                    foreach (Type nested in typeof(CardCmd).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        if (nested.Name.IndexOf("<Transform>d__", StringComparison.Ordinal) != 0) continue;
+                        MethodInfo probe = AccessTools.Method(nested, "MoveNext", Type.EmptyTypes);
+                        MethodBody probeBody = probe == null ? null : probe.GetMethodBody();
+                        byte[] probeIl = probeBody == null ? null : probeBody.GetILAsByteArray();
+                        if (probeIl != null && probeIl.Length > 512) transformStates.Add(nested);
+                    }
+                }
+                int patchedStates = 0;
+                foreach (Type state in transformStates)
+                {
+                    MethodInfo moveNext = AccessTools.Method(state, "MoveNext", Type.EmptyTypes);
+                    if (moveNext == null) continue;
+                    harmony.Patch(moveNext, null, null, new HarmonyMethod(typeof(CoordinatorPatches), "TransformIsMineTranspiler"));
+                    patchedStates++;
+                    GD.Print("[AiTeammate][Coord] Hooked " + state.FullName + ".MoveNext transpiler (P2 transform UI bypass #5.86).");
+                }
+                GD.Print("[AiTeammate][Coord] p2-transform-transpiler installed states=" + patchedStates);
+            }
+            catch (Exception ex) { GD.PrintErr("[AiTeammate] INIT-FAIL: CardCmd.Transform transpiler: " + ex.Message); }
+
             // Directive #5.34 T1: Hook CardPileCmd.Add overloads and DrawInternal
             try
             {
@@ -23224,8 +30488,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 {
                     harmony.Patch(upaExec,
                         new HarmonyMethod(typeof(CoordinatorPatches), "UsePotionActionPrefix"),
-                        null, null,
-                        new HarmonyMethod(typeof(CoordinatorPatches), "UsePotionActionFinalizer"));
+                        new HarmonyMethod(typeof(CoordinatorPatches), "UsePotionActionPostfix"));
                     GD.Print("[AiTeammate][Coord] Hooked UsePotionAction.ExecuteAction (potion transition guard #5.34).");
                 }
             }
@@ -23630,6 +30893,21 @@ private static void PatchFlowCoordinator(Harmony harmony)
             try
 
             {
+                if (__instance != null && __instance.OwnerId == TurnCoordinator.GetPlayer2NetId())
+                {
+                    Player p2 = FlowCoordinator.GetPlayer2();
+                    string phaseBefore = TurnCoordinator.GetCurrentCombatPhaseString();
+                    bool readyBefore = TurnCoordinator.GetPlayerReadyToEndTurn(p2);
+                    GD.Print(string.Format("[AiTeammate][Coord] native-phase-before-endturn phase={0} p2Ready={1}", phaseBefore, readyBefore));
+
+                    // Directive #5.48 Priority 1 & #5.57: Pass __instance so gate excludes it from in-flight check
+                    if (p2 != null && !TurnCoordinator.CheckP2EndTurnGate(p2, "EndPlayerTurnAction.ExecuteAction", __instance))
+                    {
+                        __result = Task.CompletedTask;
+                        return false;
+                    }
+                }
+
                 // #5.26: keep the solver's empty-plan EndPlayerTurnAction behind
                 // the one-shot retry/fallback, but never block the same turn forever.
                 if (__instance != null && __instance.OwnerId == TurnCoordinator.GetPlayer2NetId() &&
@@ -23803,15 +31081,82 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
         }
 
+        // Directive #5.48 Priority 1 & #5.55 T2 & #5.57: Only confirm EndTurn when real ready/phase state changes; single controlled retry on cancel ONLY (phase unchanged strictly blocked)
         public static void EndPlayerTurnActionPostfix(MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction __instance)
         {
             try
             {
                 Player p2 = FlowCoordinator.GetPlayer2();
-                if (__instance != null && p2 != null && __instance.OwnerId == p2.NetId)
+                if (__instance != null && p2 != null && (__instance.OwnerId == p2.NetId || TurnCoordinator.IsP2Target(__instance.OwnerId)))
                 {
+                    int currentTurn = TurnCoordinator.TurnNumber;
                     TurnCoordinator.P2EndTurnEnqueuedThisTurn = true;
-                    GD.Print("[AiTeammate][Coord] p2-end-turn-seen turn=" + TurnCoordinator.TurnNumber + " owner=P2(" + p2.NetId + ")");
+                    GD.Print("[AiTeammate][Coord] p2-end-turn-seen turn=" + currentTurn + " owner=P2(" + p2.NetId + ")");
+
+                    string phaseAfter = TurnCoordinator.GetCurrentCombatPhaseString();
+                    bool readyAfter = TurnCoordinator.GetPlayerReadyToEndTurn(p2);
+                    GD.Print(string.Format("[AiTeammate][Coord] native-phase-after-endturn phase={0} p2Ready={1}", phaseAfter, readyAfter));
+
+                    bool isCanceled = __instance.State == MegaCrit.Sts2.Core.Entities.Actions.GameActionState.Canceled || (__instance.CompletionTask != null && __instance.CompletionTask.IsCanceled);
+                    if (isCanceled)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-end-turn-action-canceled turn={0} owner=P2", currentTurn));
+                        TurnCoordinator.TryRetryP2EndTurn(p2, "canceled");
+                        return;
+                    }
+
+                    var cm = CombatManager.Instance;
+                    bool ready = cm != null && cm.IsPlayerReadyToEndTurn(p2);
+                    bool phaseChanged = !TurnCoordinator.IsPlayPhase();
+                    if (ready || phaseChanged)
+                    {
+                        TurnCoordinator.P2EndTurnConfirmedThisTurn = true;
+                        GD.Print(string.Format("[AiTeammate][Coord] endturn-confirmed turn={0} owner=P2({1}) ready={2} phaseChanged={3}",
+                            currentTurn, p2.NetId, ready, phaseChanged));
+                        // Directive #5.86 (Task 1B): a confirmed P2 end turn retires any pending
+                        // recovery flag; otherwise solverRecalculating stayed True after P2 was done.
+                        TurnCoordinator.PlanEmptyRecoveryInProgress = false;
+                        TurnCoordinator.RecalcSucceeded = true;
+                        GD.Print("[AiTeammate][Coord] p2-turn-settled recalc-cleared turn=" + currentTurn + " solverRecalculating=false");
+                    }
+                    else
+                    {
+                        int capturedTurn = currentTurn;
+                        Callable.From(delegate {
+                            try
+                            {
+                                int deferredTurn = TurnCoordinator.TurnNumber;
+                                if (deferredTurn != capturedTurn)
+                                {
+                                    // Turn advanced in the meantime
+                                    return;
+                                }
+                                var cm2 = CombatManager.Instance;
+                                var p2Ref = FlowCoordinator.GetPlayer2();
+                                bool ready2 = cm2 != null && p2Ref != null && cm2.IsPlayerReadyToEndTurn(p2Ref);
+                                bool phaseChanged2 = !TurnCoordinator.IsPlayPhase();
+                                if ((ready2 || phaseChanged2) && !TurnCoordinator.P2EndTurnConfirmedThisTurn)
+                                {
+                                    TurnCoordinator.P2EndTurnConfirmedThisTurn = true;
+                                    GD.Print(string.Format("[AiTeammate][Coord] endturn-confirmed turn={0} owner=P2({1}) ready={2} phaseChanged={3} deferred=true",
+                                        capturedTurn, p2Ref != null ? p2Ref.NetId : 0, ready2, phaseChanged2));
+                                }
+                                else if (!TurnCoordinator.P2EndTurnConfirmedThisTurn)
+                                {
+                                    // Directive #5.57: phase-unchanged alone is strictly PROHIBITED as a retry reason!
+                                    GD.Print("[AiTeammate][Coord] endturn-retry-blocked-reason reason=phase-unchanged-not-allowed");
+                                }
+                            }
+                            catch (Exception exDef)
+                            {
+                                GD.PrintErr("[AiTeammate][Coord] EndPlayerTurnActionPostfix deferred check exception: " + exDef);
+                            }
+                        }).CallDeferred();
+                    }
+
+                    // Directive #5.57: Decouple P1 UI restoration from EndTurn action.
+                    // P2 ending turn must wait for and confirm native next phase signal before executing P1 UI restoration.
+                    TurnCoordinator.P1RestorePendingForPhaseAdvance = true;
                 }
             }
             catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] p2 summary on end-turn action failed: " + ex.Message); }
@@ -23846,20 +31191,100 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 }
                 if (isP2)
                 {
+                    string cId = __instance.CardModelId != null ? __instance.CardModelId.ToString() : "unknown";
+                    // Directive #5.48 Priority 5: Distinguish enqueued, executing, settled, canceled, and failed
+                    bool isCanceled = __instance.State == MegaCrit.Sts2.Core.Entities.Actions.GameActionState.Canceled || (__instance.CompletionTask != null && __instance.CompletionTask.IsCanceled);
+                    bool isFaulted = __instance.CompletionTask != null && __instance.CompletionTask.IsFaulted;
+
+                    if (isCanceled)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-card-action-canceled actionId={0} card={1} owner=P2 reason=action-state-canceled", __instance.Id, cId));
+                        // Directive #5.49: Clean pending fallback / recovery state on canceled card action
+                        if (TurnCoordinator.P2FallbackActionPendingThisTurn)
+                        {
+                            TurnCoordinator.P2FallbackActionPendingThisTurn = false;
+                            TurnCoordinator.PlanEmptyRecoveryInProgress = false;
+                            ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                            int remainingQueue = TurnCoordinator.GetP2QueuePlayCardCount(p2NetId);
+                            if (remainingQueue == 0)
+                            {
+                                TurnCoordinator.EnqueueP2EndTurn(FlowCoordinator.GetPlayer2());
+                            }
+                        }
+                        return;
+                    }
+                    if (isFaulted)
+                    {
+                        string faultMsg = __instance.Exception != null ? __instance.Exception.Message : "task-faulted";
+                        GD.PrintErr(string.Format("[AiTeammate][Coord] p2-card-action-failed actionId={0} card={1} owner=P2 reason={2}", __instance.Id, cId, faultMsg));
+                        // Directive #5.49: Clean pending fallback / recovery state on faulted card action
+                        if (TurnCoordinator.P2FallbackActionPendingThisTurn)
+                        {
+                            TurnCoordinator.P2FallbackActionPendingThisTurn = false;
+                            TurnCoordinator.PlanEmptyRecoveryInProgress = false;
+                            ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                            int remainingQueue = TurnCoordinator.GetP2QueuePlayCardCount(p2NetId);
+                            if (remainingQueue == 0)
+                            {
+                                TurnCoordinator.EnqueueP2EndTurn(FlowCoordinator.GetPlayer2());
+                            }
+                        }
+                        return;
+                    }
+
                     TurnCoordinator.P2PlayedCardsThisTurn++;
+                    TurnCoordinator.P2ExecutedCardActionsThisTurn++;
                     int actionTurn = TurnCoordinator.P2TelemetryTurn > 0 ? TurnCoordinator.P2TelemetryTurn : TurnCoordinator.TurnNumber;
                     TurnCoordinator.P2PlayedCardsByTurn[actionTurn] = TurnCoordinator.P2PlayedCardsThisTurn;
+
+                    if (TurnCoordinator.PendingPotionContinuation || (!TurnCoordinator.PotionContinuationExecutedPlayThisTurn && TurnCoordinator.HasTriggeredPotionContinuationThisTurn))
+                    {
+                        TurnCoordinator.PotionContinuationExecutedPlayThisTurn = true;
+                        TurnCoordinator.PendingPotionContinuation = false;
+                        cId = __instance != null ? __instance.CardModelId.ToString() : "unknown";
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-continuation-play-executed owner=P2 card={0}", cId));
+                    }
                     if (TurnCoordinator.P2FallbackActionPendingThisTurn)
                     {
                         TurnCoordinator.P2FallbackActionExecutedThisTurn = true;
-                        TurnCoordinator.P2FallbackActionPendingThisTurn = false;
-                        GD.Print("[AiTeammate][Coord] fallback-greedy-executed turn=" + TurnCoordinator.TurnNumber + " count=" + TurnCoordinator.P2PlayedCardsThisTurn);
-                        if (!TurnCoordinator.IsEnqueuingFallbackBatch)
+                        TurnCoordinator.P2FallbackGreedyUsedThisTurn = true;
+                        string cIdFallback = __instance != null ? __instance.CardModelId.ToString() : "unknown";
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-fallback-played turn={0} card={1}", TurnCoordinator.TurnNumber, cIdFallback));
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-executed turn={0} card={1}", TurnCoordinator.TurnNumber, cIdFallback));
+
+                        Player p2Now = FlowCoordinator.GetPlayer2();
+                        int queued = TurnCoordinator.GetP2QueuePlayCardCount(p2Now != null ? p2Now.NetId : 0);
+
+                        if (queued > 0)
                         {
-                            TurnCoordinator.EnqueueP2EndTurnAfterFallback(FlowCoordinator.GetPlayer2());
+                            TurnCoordinator.P2FallbackActionPendingThisTurn = true;
                         }
-                        TurnCoordinator.P2ZeroActionProtectionFinalizedThisTurn = true;
-                        TurnCoordinator.LogP2TurnSummary("fallback-greedy-executed");
+                        else
+                        {
+                            TurnCoordinator.P2FallbackActionPendingThisTurn = false;
+
+                            int remEnergy = (p2Now != null && p2Now.PlayerCombatState != null) ? p2Now.PlayerCombatState.Energy : 0;
+                            bool hasAtkNow;
+                            bool hasUsableNow = (p2Now != null) && TurnCoordinator.P2HasUsableCard(p2Now, out hasAtkNow);
+
+                            if (remEnergy > 0 && hasUsableNow && !TurnCoordinator.P2PostFallbackGreedyContinuationUsedThisTurn)
+                            {
+                                TurnCoordinator.P2PostFallbackGreedyContinuationUsedThisTurn = true;
+                                GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-greedy-continuation turn={0} energy={1}", TurnCoordinator.TurnNumber, remEnergy));
+                                TurnCoordinator.TryFallbackGreedy(p2Now, true);
+                            }
+                            else
+                            {
+                                TurnCoordinator.P2FallbackExhaustedThisTurn = true;
+                                TurnCoordinator.LogFallbackExhaustedSet("post-fallback-budget-finish");
+                                TurnCoordinator.PlanEmptyRecoveryInProgress = false;
+                                GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-exhausted turn={0}", TurnCoordinator.TurnNumber));
+                                TurnCoordinator.EnqueueP2EndTurnAfterFallback(p2Now);
+                            }
+
+                            TurnCoordinator.P2ZeroActionProtectionFinalizedThisTurn = true;
+                            TurnCoordinator.LogP2TurnSummary("fallback-greedy-executed");
+                        }
                     }
                     GD.Print("[AiTeammate][Coord] p2-play-executed count=" + TurnCoordinator.P2PlayedCardsThisTurn);
                 }
@@ -23870,9 +31295,22 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
-        public static void SetUpCombatPostfix()
-
+        public static void CombatSolverOverlayVisibilityPostfix()
         {
+            try
+            {
+                if (!FlowCoordinator.ShowCombatSolverUi)
+                {
+                    FlowCoordinator.ApplyCombatSolverUiVisibility("overlay-hook");
+                }
+            }
+            catch { }
+        }
+
+        public static void SetUpCombatPostfix()
+        {
+            FlowCoordinator.ApplyCombatSolverUiVisibility("combat-setup");
+            FlowCoordinator.ApplyLocalMultiControlUiVisibility("combat-setup");
 
             try
 
@@ -23887,6 +31325,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 TurnCoordinator.ResetP1RestoreState();
                 TurnCoordinator.ResetState("SetUpCombat");
                 TurnCoordinator.CurrentExecutingActionOwnerNetId = 0;
+                TurnCoordinator.CurrentExecutingActionInstance = null;
 
                 TurnCoordinator.IsPreCombatOrLoading = true;
 
@@ -23905,6 +31344,30 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 TurnCoordinator.EnsureFullAutoEnabled();
 
                 SwitchSourceAuditor.ResetForCombat();
+
+                // Directive #5.58-B Task 3: Combat entry observation & safe calibration (no blind UI rebuild)
+                ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                ulong draId = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong localId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                GD.Print(string.Format("[AiTeammate][Coord] combat-start-controller-assert p1={0} dra={1} local={2} source=SetUpCombat", p1Id, draId, localId));
+
+                // Directive #5.92 T3: second archiving trigger. The combat-end edge detector normally
+                // catches the previous battle, but a session that ends mid-combat (or a missed edge)
+                // still gets its evidence copied here, before CombatSolver starts the next jsonl.
+                TurnCoordinator.ArchiveCombatSolverLogs();
+                TurnCoordinator.NotifyCombatStartForLogArchive();
+
+                if (TurnCoordinator.FixedP1CombatControl && p1Id != 0)
+                {
+                    if (localId != p1Id)
+                    {
+                        LocalContext.NetId = p1Id;
+                    }
+                    if (draId != 0 && draId != p1Id)
+                    {
+                        TurnFlowPatches.SwitchControlToPlayer(p1Id, "wakuu-p1-restore:combat-start", true, true);
+                    }
+                }
 
                 GD.Print("[AiTeammate][Coord] CombatManager.SetUpCombat: reset LeakStackDumpCount = 0, FullAutoDisabledDumpCount = 0, unknown switch source tracker, and enforced FullAutoEnabled=true.");
 
@@ -23977,6 +31440,24 @@ private static void PatchFlowCoordinator(Harmony harmony)
             try
 
             {
+                // Directive #5.57: Diagnostic player turn start tracking & pending P1 UI restore
+                var csSetup = CombatManager.Instance != null ? CombatManager.Instance.DebugOnlyGetState() : null;
+                if (csSetup != null && csSetup.Players != null)
+                {
+                    foreach (var p in csSetup.Players)
+                    {
+                        if (p != null)
+                        {
+                            GD.Print(string.Format("[AiTeammate][Coord] player-turn-start-owner owner={0}", p.NetId));
+                        }
+                    }
+                }
+
+                if (TurnCoordinator.P1RestorePendingForPhaseAdvance)
+                {
+                    TurnCoordinator.P1RestorePendingForPhaseAdvance = false;
+                    TurnCoordinator.ExecuteFixedP1UiRestore(TurnCoordinator.GetCurrentCombatPhaseString(), "setup-player-turn");
+                }
 
                 ModEntry.EnsureCombatSolverPatched();
 
@@ -24132,24 +31613,145 @@ private static void PatchFlowCoordinator(Harmony harmony)
             catch { }
         }
 
-        // Directive #5.42 Task 3: Block Canceled P2 PlayCardAction from calling RemoveCardFromQueueForCancellation
-        public static bool RemoveCardFromQueueForCancellationPrefix(object[] __args)
+        // Directive #5.48 Priority 3: Restore targeted cancellation cleanup for NCardPlayQueue
+        public static bool RemoveCardFromQueueForCancellationPrefix(object __instance, object[] __args)
         {
             try
             {
-                if (!TurnCoordinator.IsFixedP1CombatControlActive() || __args == null) return true;
+                if (__args == null) return true;
                 for (int i = 0; i < __args.Length; i++)
                 {
                     var pca = __args[i] as MegaCrit.Sts2.Core.GameActions.PlayCardAction;
                     if (pca != null && TurnCoordinator.IsP2Target(pca.OwnerId))
                     {
-                        GD.Print("[AiTeammate][Coord] p2-cancel-card-queue-ui-suppressed owner=" + pca.OwnerId);
+                        string cardId = pca.CardModelId != null ? pca.CardModelId.ToString() : "unknown";
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-card-cancellation-cleaned actionId={0} card={1} owner={2}",
+                            pca.Id, cardId, pca.OwnerId));
+                        // Allow native to run so NCardPlayQueue removes the card node from the play queue!
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] RemoveCardFromQueueForCancellationPrefix error: " + ex);
+            }
+            return true;
+        }
+
+        // Directive #5.69: Enforce native remote/non-local branch for P2 card transformations
+        public static bool LocalContextCardIsMinePrefix(CardModel card, ref bool __result)
+        {
+            try
+            {
+                if (card == null || card.Owner == null) return true;
+                if (!TurnCoordinator.IsFixedP1CombatControlActive()) return true;
+
+                // Requirement 1: Only affects P2 cards, P1 card transformations remain 100% vanilla.
+                if (!TurnCoordinator.IsP2Target(card.Owner.NetId)) return true;
+
+                // Check if caller is inside CardCmd.Transform state machine
+                var st = new System.Diagnostics.StackTrace(1, false);
+                for (int i = 0; i < Math.Min(st.FrameCount, 4); i++)
+                {
+                    var frame = st.GetFrame(i);
+                    if (frame == null) continue;
+                    var method = frame.GetMethod();
+                    if (method == null) continue;
+                    Type dt = method.DeclaringType;
+                    if (dt != null && dt.Name.IndexOf("Transform", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        (dt.DeclaringType == typeof(MegaCrit.Sts2.Core.Commands.CardCmd) || 
+                         (dt.FullName != null && dt.FullName.Contains("CardCmd"))))
+                    {
+                        __result = false;
+                        GD.Print(string.Format("[AiTeammate][Coord] p2-card-transform-remote-branch-enforced card={0} owner={1}",
+                            card.Id, card.Owner.NetId));
+                        return false; // Skip vanilla IsMine, return false!
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] LocalContextCardIsMinePrefix error: " + ex.Message);
+            }
+            return true;
+        }
+
+        // Directive #5.86 (Task 1A): LocalContext.IsMine(CardModel) is only 25 IL bytes
+        // (null check + IsMutable + Owner + IsMe), so the JIT inlines it into every call site and
+        // the #5.69 Harmony prefix never runs on the real call in CardCmd.<Transform>d__13.MoveNext.
+        // That is why P2 playing CARD.BEGONE still threw "Couldn't get hand node for original card".
+        // The call site inside the state machine is the only reliable lever: rewrite that single
+        // `call LocalContext.IsMine` into our guard, which forces the native remote branch (no
+        // NCard.FindOnTable / NCardTransformVfx) for P2-owned cards that have no foreground hand node.
+        private static MethodInfo TransformFindOnTableMethod;
+        private static bool TransformFindOnTableProbed;
+        private static int TransformBypassCount;
+
+        public static IEnumerable<CodeInstruction> TransformIsMineTranspiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var result = new List<CodeInstruction>(instructions);
+            MethodInfo guard = AccessTools.Method(typeof(CoordinatorPatches), "P2TransformIsMineGuard");
+            if (guard == null)
+            {
+                GD.PrintErr("[AiTeammate][Coord] p2-transform-transpiler skip reason=missing-guard");
+                return result;
+            }
+            int replaced = 0;
+            for (int i = 0; i < result.Count; i++)
+            {
+                CodeInstruction ins = result[i];
+                if (ins.opcode != System.Reflection.Emit.OpCodes.Call) continue;
+                MethodInfo op = ins.operand as MethodInfo;
+                if (op == null || op.Name != "IsMine" || op.DeclaringType != typeof(LocalContext)) continue;
+                ParameterInfo[] ps = op.GetParameters();
+                if (ps.Length != 1 || ps[0].ParameterType != typeof(CardModel)) continue;
+                result[i] = new CodeInstruction(System.Reflection.Emit.OpCodes.Call, guard);
+                replaced++;
+            }
+            GD.Print("[AiTeammate][Coord] p2-transform-transpiler applied replacements=" + replaced);
+            return result;
+        }
+
+        public static bool P2TransformIsMineGuard(CardModel card)
+        {
+            try
+            {
+                if (card != null && card.Owner != null &&
+                    TurnCoordinator.IsFixedP1CombatControlActive() &&
+                    TurnCoordinator.IsP2Target(card.Owner.NetId))
+                {
+                    if (!TransformFindOnTableProbed)
+                    {
+                        TransformFindOnTableProbed = true;
+                        TransformFindOnTableMethod = AccessTools.Method(typeof(NCard), "FindOnTable", new Type[] { typeof(CardModel), typeof(PileType?) });
+                    }
+                    bool nodeMissing;
+                    if (TransformFindOnTableMethod == null)
+                    {
+                        nodeMissing = true;
+                    }
+                    else
+                    {
+                        object node = TransformFindOnTableMethod.Invoke(null, new object[] { card, (PileType?)PileType.Hand });
+                        nodeMissing = node == null;
+                    }
+                    if (nodeMissing)
+                    {
+                        TransformBypassCount++;
+                        if (TransformBypassCount <= 20 || TransformBypassCount % 50 == 0)
+                        {
+                            GD.Print(string.Format("[AiTeammate][Coord] p2-transform-ui-bypass card={0} owner=P2 count={1}", card.Id, TransformBypassCount));
+                        }
                         return false;
                     }
                 }
             }
-            catch { }
-            return true;
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] P2TransformIsMineGuard error: " + ex.Message);
+            }
+            return LocalContext.IsMine(card);
         }
 
         // Directive #5.36 T2.2: Hard gate preventing P2 cards from entering NPlayerHand
@@ -24363,10 +31965,45 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 if (__instance != null && TurnCoordinator.IsP2Target(__instance.OwnerId))
                 {
                     TurnCoordinator.P2PotionOpInFlightCount++;
+                    string potId = TurnCoordinator.ExtractPotionIdFromAction(__instance);
+                    TurnCoordinator.ActivePotionId = potId;
+                    TurnCoordinator.ActivePotionResolvedCard = null;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-potion-effect-start owner=P2 potion={0}", potId));
                     GD.Print("[AiTeammate][Coord] p2-hand-change-ui-suppressed owner=P2 reason=use-potion");
                 }
             }
             catch { }
+        }
+
+        // Directive #5.48 Priority 4: Observe actual Task terminal state for UsePotionAction
+        public static void UsePotionActionPostfix(MegaCrit.Sts2.Core.GameActions.UsePotionAction __instance, Task __result)
+        {
+            try
+            {
+                if (__instance != null && TurnCoordinator.IsP2Target(__instance.OwnerId))
+                {
+                    TurnCoordinator.PendingDeferredHandCheckAfterP2 = true;
+                    if (__result != null)
+                    {
+                        var captured = __instance;
+                        __result.ContinueWith(delegate(Task t)
+                        {
+                            string status = t.IsCanceled ? "canceled" : (t.IsFaulted ? "faulted" : "completed");
+                            Callable.From(delegate {
+                                TurnCoordinator.HandlePotionActionCompleted(captured, status, t.Exception);
+                            }).CallDeferred();
+                        });
+                    }
+                    else
+                    {
+                        TurnCoordinator.HandlePotionActionCompleted(__instance, "completed", null);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][Coord] UsePotionActionPostfix error: " + ex);
+            }
         }
 
         public static void UsePotionActionFinalizer(MegaCrit.Sts2.Core.GameActions.UsePotionAction __instance)
@@ -24375,7 +32012,6 @@ private static void PatchFlowCoordinator(Harmony harmony)
             {
                 if (__instance != null && TurnCoordinator.IsP2Target(__instance.OwnerId))
                 {
-                    if (TurnCoordinator.P2PotionOpInFlightCount > 0) TurnCoordinator.P2PotionOpInFlightCount--;
                     TurnCoordinator.PendingDeferredHandCheckAfterP2 = true;
                 }
             }
@@ -24461,6 +32097,11 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                     TurnCoordinator.CheckMidturnReplan("p1-card-played");
 
+                }
+
+                if (TurnCoordinator.PendingPotionContinuation && !TurnCoordinator.PotionContinuationScheduled)
+                {
+                    TurnCoordinator.CheckPotionContinuation("end-card-or-potion-effect");
                 }
 
             }
@@ -25355,6 +32996,752 @@ private static void PatchFlowCoordinator(Harmony harmony)
         }
     }
 
+    // Directive #5.97 Task 2: Floating UI visibility toggle overlay + hotkeys (F7/F8)
+    // Inherits from CanvasLayer (Layer = 125) to guarantee rendering on top of all game scenes and menus
+    public sealed class AiTeammateUiToggleOverlay : CanvasLayer
+    {
+        private static AiTeammateUiToggleOverlay _instance;
+        private Control _root;
+        private PanelContainer _panel;
+        private VBoxContainer _vbox;
+        private HBoxContainer _header;
+        private Label _titleLabel;
+        private Button _btnFold;
+        private Button _btnSolver;
+        private Button _btnLmc;
+
+        private bool _isCollapsed = false;
+        private bool _isDragging = false;
+        private bool _hasUserDragged = false;
+        private Vector2 _dragOffset = Vector2.Zero;
+        private const string HotkeySolverAction = "aiteammate_toggle_solver_f7";
+        private const string HotkeyLmcAction = "aiteammate_toggle_lmc_f8";
+        private static bool _hotkeysRegistered = false;
+
+        public static void Initialize()
+        {
+            try
+            {
+                if (_instance != null && GodotObject.IsInstanceValid(_instance)) return;
+                SceneTree tree = Engine.GetMainLoop() as SceneTree;
+                if (tree == null || tree.Root == null) return;
+
+                _instance = new AiTeammateUiToggleOverlay();
+                _instance.Name = "AiTeammateUiToggleOverlay";
+                _instance.Layer = 125; // Renders on top of all game layers
+                _instance.Visible = true;
+
+                _instance._root = new Control();
+                _instance._root.Name = "RootControl";
+                _instance._root.MouseFilter = Control.MouseFilterEnum.Ignore;
+                _instance._root.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+                _instance.AddChild(_instance._root);
+
+                _instance._panel = new PanelContainer();
+                _instance._panel.Name = "TogglePanel";
+                _instance._panel.MouseFilter = Control.MouseFilterEnum.Stop;
+
+                StyleBoxFlat style = new StyleBoxFlat();
+                style.BgColor = new Color(0.08f, 0.10f, 0.16f, 0.92f);
+                style.BorderColor = new Color(0.35f, 0.45f, 0.65f, 0.90f);
+                style.SetBorderWidthAll(1);
+                style.SetCornerRadiusAll(6);
+                style.ContentMarginLeft = 8;
+                style.ContentMarginRight = 8;
+                style.ContentMarginTop = 6;
+                style.ContentMarginBottom = 6;
+                _instance._panel.AddThemeStyleboxOverride("panel", style);
+
+                _instance._vbox = new VBoxContainer();
+                _instance._vbox.AddThemeConstantOverride("separation", 4);
+                _instance._vbox.MouseFilter = Control.MouseFilterEnum.Pass;
+                _instance._panel.AddChild(_instance._vbox);
+
+                _instance._header = new HBoxContainer();
+                _instance._header.AddThemeConstantOverride("separation", 6);
+                _instance._header.MouseFilter = Control.MouseFilterEnum.Pass;
+
+                _instance._titleLabel = new Label();
+                _instance._titleLabel.Text = "AI队友 UI 开关";
+                _instance._titleLabel.AddThemeFontSizeOverride("font_size", 12);
+                _instance._titleLabel.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1.0f, 0.95f));
+                _instance._titleLabel.MouseFilter = Control.MouseFilterEnum.Pass;
+                _instance._titleLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+                _instance._header.AddChild(_instance._titleLabel);
+
+                _instance._btnFold = new Button();
+                _instance._btnFold.Text = "[-]";
+                _instance._btnFold.CustomMinimumSize = new Vector2(26, 22);
+                _instance._btnFold.AddThemeFontSizeOverride("font_size", 11);
+                _instance._btnFold.FocusMode = Control.FocusModeEnum.None;
+                _instance._btnFold.Pressed += _instance.OnFoldPressed;
+                _instance._header.AddChild(_instance._btnFold);
+
+                _instance._vbox.AddChild(_instance._header);
+
+                _instance._btnSolver = new Button();
+                _instance._btnSolver.CustomMinimumSize = new Vector2(175, 28);
+                _instance._btnSolver.AddThemeFontSizeOverride("font_size", 12);
+                _instance._btnSolver.FocusMode = Control.FocusModeEnum.None;
+                _instance._btnSolver.TooltipText = "切换战斗求解器浮层 (F7)";
+                _instance._btnSolver.Pressed += OnSolverPressed;
+                _instance._vbox.AddChild(_instance._btnSolver);
+
+                _instance._btnLmc = new Button();
+                _instance._btnLmc.CustomMinimumSize = new Vector2(175, 28);
+                _instance._btnLmc.AddThemeFontSizeOverride("font_size", 12);
+                _instance._btnLmc.FocusMode = Control.FocusModeEnum.None;
+                _instance._btnLmc.TooltipText = "切换多控切换按钮及鬼手 (F8)";
+                _instance._btnLmc.Pressed += OnLmcPressed;
+                _instance._vbox.AddChild(_instance._btnLmc);
+
+                _instance._panel.GuiInput += _instance.OnPanelGuiInput;
+
+                _instance._root.AddChild(_instance._panel);
+                tree.Root.AddChild(_instance);
+
+                Vector2 viewSize = _instance._root.GetViewportRect().Size;
+                float defaultX = viewSize.X > 300f ? (viewSize.X - 220f) : 10f;
+                _instance._panel.Position = new Vector2(defaultX, 60f);
+
+                RegisterHotkeys();
+                UpdateButtons();
+                GD.Print("[AiTeammate][UI] toggle-overlay-ready (CanvasLayer Layer=125, always-visible)");
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][UI] toggle-overlay init error: " + ex);
+            }
+        }
+
+        private static void RegisterHotkeys()
+        {
+            try
+            {
+                if (_hotkeysRegistered) return;
+                if (!InputMap.HasAction(HotkeySolverAction)) InputMap.AddAction(HotkeySolverAction);
+                InputEventKey k7 = new InputEventKey();
+                k7.Keycode = Key.F7;
+                InputMap.ActionAddEvent(HotkeySolverAction, k7);
+
+                if (!InputMap.HasAction(HotkeyLmcAction)) InputMap.AddAction(HotkeyLmcAction);
+                InputEventKey k8 = new InputEventKey();
+                k8.Keycode = Key.F8;
+                InputMap.ActionAddEvent(HotkeyLmcAction, k8);
+
+                _hotkeysRegistered = true;
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][UI] RegisterHotkeys error: " + ex);
+            }
+        }
+
+        private void OnPanelGuiInput(InputEvent @event)
+        {
+            InputEventMouseButton mb = @event as InputEventMouseButton;
+            if (mb != null)
+            {
+                if (mb.ButtonIndex == MouseButton.Left)
+                {
+                    if (mb.Pressed)
+                    {
+                        _isDragging = true;
+                        _hasUserDragged = true;
+                        _dragOffset = mb.GlobalPosition - _panel.Position;
+                    }
+                    else
+                    {
+                        _isDragging = false;
+                    }
+                }
+            }
+
+            InputEventMouseMotion mm = @event as InputEventMouseMotion;
+            if (mm != null && _isDragging)
+            {
+                Vector2 newPos = mm.GlobalPosition - _dragOffset;
+                Vector2 viewSize = _root != null ? _root.GetViewportRect().Size : Vector2.Zero;
+                if (viewSize.X > 0 && viewSize.Y > 0)
+                {
+                    newPos.X = Math.Max(0, Math.Min(newPos.X, viewSize.X - _panel.Size.X));
+                    newPos.Y = Math.Max(0, Math.Min(newPos.Y, viewSize.Y - _panel.Size.Y));
+                }
+                _panel.Position = newPos;
+            }
+        }
+
+        private void OnFoldPressed()
+        {
+            _isCollapsed = !_isCollapsed;
+            _btnFold.Text = _isCollapsed ? "[+]" : "[-]";
+            _btnSolver.Visible = !_isCollapsed;
+            _btnLmc.Visible = !_isCollapsed;
+        }
+
+        public static void UpdateButtons()
+        {
+            if (_instance == null) return;
+            if (_instance._btnSolver != null)
+            {
+                _instance._btnSolver.Text = FlowCoordinator.ShowCombatSolverUi ? "求解器 UI: 显示 [F7]" : "求解器 UI: 隐藏 [F7]";
+            }
+            if (_instance._btnLmc != null)
+            {
+                _instance._btnLmc.Text = FlowCoordinator.ShowLocalMultiControlUi ? "多控 UI: 显示 [F8]" : "多控 UI: 隐藏 [F8]";
+            }
+        }
+
+        public static void ToggleSolverUi(string source)
+        {
+            FlowCoordinator.ShowCombatSolverUi = !FlowCoordinator.ShowCombatSolverUi;
+            FlowCoordinator.ApplyCombatSolverUiVisibility(source);
+            FlowCoordinator.SaveSettings(source);
+            UpdateButtons();
+        }
+
+        public static void ToggleLmcUi(string source)
+        {
+            FlowCoordinator.ShowLocalMultiControlUi = !FlowCoordinator.ShowLocalMultiControlUi;
+            FlowCoordinator.ApplyLocalMultiControlUiVisibility(source);
+            FlowCoordinator.SaveSettings(source);
+            UpdateButtons();
+        }
+
+        private static void OnSolverPressed()
+        {
+            ToggleSolverUi("click-solver-btn");
+        }
+
+        private static void OnLmcPressed()
+        {
+            ToggleLmcUi("click-lmc-btn");
+        }
+
+        public override void _Process(double delta)
+        {
+            // Always keep visible across entire game (menus, runs, combat)
+            Visible = true;
+
+            // Auto-align to top-right if user hasn't dragged panel yet
+            if (!_hasUserDragged && _root != null && _panel != null)
+            {
+                Vector2 viewSize = _root.GetViewportRect().Size;
+                if (viewSize.X > 400 && viewSize.Y > 300)
+                {
+                    float targetX = viewSize.X - Math.Max(180, _panel.Size.X) - 20;
+                    float targetY = 60;
+                    if (Math.Abs(_panel.Position.X - targetX) > 20 || Math.Abs(_panel.Position.Y - targetY) > 20)
+                    {
+                        _panel.Position = new Vector2(targetX, targetY);
+                    }
+                }
+            }
+
+            if (Input.IsActionJustPressed(HotkeySolverAction))
+            {
+                ToggleSolverUi("hotkey-F7");
+            }
+            if (Input.IsActionJustPressed(HotkeyLmcAction))
+            {
+                ToggleLmcUi("hotkey-F8");
+            }
+        }
+
+        public override void _UnhandledInput(InputEvent @event)
+        {
+            InputEventKey k = @event as InputEventKey;
+            if (k != null && k.Pressed && !k.Echo)
+            {
+                if (k.Keycode == Key.F7)
+                {
+                    ToggleSolverUi("hotkey-F7");
+                    GetViewport().SetInputAsHandled();
+                }
+                else if (k.Keycode == Key.F8)
+                {
+                    ToggleLmcUi("hotkey-F8");
+                    GetViewport().SetInputAsHandled();
+                }
+            }
+        }
+    }
+
+    // Directive #5.80 / #5.87: independent, read-only P2 hand mirror. It never uses NPlayerHand and
+    // never changes LocalContext or controlled-player state. Hover detection runs in _Process against
+    // P2's on-screen creature rect, and every node keeps MouseFilter=Ignore so it can never eat clicks.
+    public sealed class P2HandPreviewOverlay : Control
+    {
+        private static P2HandPreviewOverlay _instance;
+        private PanelContainer _panel;
+        private VBoxContainer _column;
+        private HBoxContainer _row;
+        private Label _title;
+        private bool _shown;
+        private string _fingerprint = "";
+        private DateTime _lastScan = DateTime.MinValue;
+        private bool _probeLogged;
+        private bool _hoverEnterLogged;
+        private bool _hoverExitLogged;
+        private static DateTime _lastOverlayScan = DateTime.MinValue;
+        private static bool _overlayCached;
+        private static readonly Color PanelBg = new Color(0.06f, 0.08f, 0.12f, 0.62f);
+
+        public static void Initialize()
+        {
+            try
+            {
+                if (_instance != null) return;
+                SceneTree tree = Engine.GetMainLoop() as SceneTree;
+                if (tree == null || tree.Root == null) return;
+                _instance = new P2HandPreviewOverlay();
+                _instance.Name = "AiTeammateP2HandPreview";
+                _instance.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+                _instance.MouseFilter = Control.MouseFilterEnum.Ignore;
+                _instance.ZIndex = 1400;
+                // Directive #5.87: a hidden parent Control never dispatches mouse events to children, and
+                // _Process still runs, so the root stays visible and only the preview panel toggles.
+                _instance.Visible = true;
+                tree.Root.AddChild(_instance);
+
+                _instance._panel = new PanelContainer();
+                _instance._panel.Name = "P2HandPreviewPanel";
+                _instance._panel.MouseFilter = Control.MouseFilterEnum.Ignore;
+                _instance._panel.Modulate = new Color(1f, 1f, 1f, 0.82f);
+                _instance._panel.Visible = false;
+                StyleBoxFlat bg = new StyleBoxFlat();
+                bg.BgColor = PanelBg;
+                bg.SetCornerRadiusAll(8);
+                bg.SetBorderWidthAll(1);
+                bg.BorderColor = new Color(0.55f, 0.62f, 0.75f, 0.55f);
+                bg.SetContentMarginAll(10);
+                _instance._panel.AddThemeStyleboxOverride("panel", bg);
+                _instance.AddChild(_instance._panel);
+
+                _instance._column = new VBoxContainer();
+                _instance._column.MouseFilter = Control.MouseFilterEnum.Ignore;
+                _instance._column.AddThemeConstantOverride("separation", 8);
+                _instance._panel.AddChild(_instance._column);
+
+                _instance._title = new Label();
+                _instance._title.MouseFilter = Control.MouseFilterEnum.Ignore;
+                _instance._title.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f, 0.92f));
+                _instance._title.AddThemeFontSizeOverride("font_size", 14);
+                _instance._column.AddChild(_instance._title);
+
+                _instance._row = new HBoxContainer();
+                _instance._row.MouseFilter = Control.MouseFilterEnum.Ignore;
+                _instance._row.AddThemeConstantOverride("separation", 10);
+                _instance._column.AddChild(_instance._row);
+
+                GD.Print("[AiTeammate][Coord] p2-hand-preview-created node=Control mouse-filter=Ignore hover=character-rect");
+                GD.Print("[AiTeammate][Coord] p2-hand-preview-ready node=PanelContainer hover=P2-creature-or-left-band");
+            }
+            catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] p2-hand-preview-init-failed: " + ex.Message); }
+        }
+
+        public override void _Process(double delta)
+        {
+            try
+            {
+                if (_panel == null) return;
+                if (!TurnCoordinator.IsInCombat())
+                {
+                    if (_shown) HidePreview("combat-end");
+                    return;
+                }
+                bool allow = CanShow();
+                bool inRect = allow && IsMouseOverP2Character();
+                if (inRect)
+                {
+                    if (!_shown) ShowPreview("hover-enter");
+                    else Refresh(false);
+                }
+                else if (_shown)
+                {
+                    HidePreview(allow ? "hover-exit" : "choice-overlay");
+                }
+            }
+            catch { }
+        }
+
+        private void ShowPreview(string reason)
+        {
+            _shown = true;
+            _fingerprint = "";
+            _panel.Visible = true;
+            if (!_hoverEnterLogged) { _hoverEnterLogged = true; GD.Print("[AiTeammate][Coord] p2-hand-preview-hover-enter-detected owner=P2"); }
+            Refresh(true);
+            GD.Print("[AiTeammate][Coord] p2-hand-preview shown owner=P2 count=" + CurrentCount() + " reason=" + reason);
+            GD.Print("[AiTeammate][Coord] p2-hand-preview-visible owner=P2");
+        }
+
+        private void HidePreview(string reason)
+        {
+            if (!_shown) return;
+            _shown = false;
+            _panel.Visible = false;
+            _fingerprint = "";
+            if (!_hoverExitLogged) { _hoverExitLogged = true; GD.Print("[AiTeammate][Coord] p2-hand-preview-hover-exit-detected owner=P2"); }
+            GD.Print("[AiTeammate][Coord] p2-hand-preview hidden owner=P2 reason=" + reason);
+            GD.Print("[AiTeammate][Coord] p2-hand-preview-hidden owner=P2");
+        }
+
+        // Directive #5.87: staying visible while P2 deploys is intentional — P1 should watch the hand
+        // update live. Only real full-screen choice overlays hide the preview.
+        private bool CanShow()
+        {
+            if (!TurnCoordinator.IsInCombat()) return false;
+            if (FlowCoordinator.GetPlayer2() == null) return false;
+            if (HasBlockingChoiceOverlay()) return false;
+            return true;
+        }
+
+        private static bool HasBlockingChoiceOverlay()
+        {
+            try
+            {
+                DateTime now = DateTime.UtcNow;
+                if ((now - _lastOverlayScan).TotalMilliseconds < 250) return _overlayCached;
+                _lastOverlayScan = now;
+                bool found = false;
+                try { if (FlowCoordinator.IsSubPageManualInteracting) found = true; } catch { }
+                if (!found) found = ScanOverlayStack();
+                _overlayCached = found;
+                return found;
+            }
+            catch { return false; }
+        }
+
+        private static bool ScanOverlayStack()
+        {
+            try
+            {
+                NOverlayStack stack = NOverlayStack.Instance;
+                if (stack == null) return false;
+                FieldInfo field = AccessTools.Field(typeof(NOverlayStack), "_overlays");
+                IList overlays = field != null ? field.GetValue(stack) as IList : null;
+                if (overlays == null) return false;
+                foreach (object entry in overlays)
+                {
+                    Node node = entry as Node;
+                    if (node == null || !GodotObject.IsInstanceValid(node)) continue;
+                    string tn = node.GetType().Name;
+                    if (tn.IndexOf("CardRewardSelection", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    if (tn.IndexOf("CardGrid", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    if (tn.IndexOf("ChooseACard", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    if (tn.IndexOf("DeckUpgradeSelect", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    if (tn.IndexOf("RewardsScreen", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private int CurrentCount()
+        {
+            Player p2 = FlowCoordinator.GetPlayer2();
+            CardPile hand = p2 != null ? PileType.Hand.GetPile(p2) : null;
+            return hand != null && hand.Cards != null ? hand.Cards.Count : 0;
+        }
+
+        private string CurrentFingerprint(Player p2)
+        {
+            CardPile hand = p2 != null ? PileType.Hand.GetPile(p2) : null;
+            if (hand == null || hand.Cards == null) return "empty";
+            return string.Join("|", hand.Cards.Where(c => c != null).Select(c => {
+                string id = c.Id != null ? c.Id.ToString() : "unknown";
+                string upgraded = "";
+                try { upgraded = c.IsUpgraded ? ":U" : ""; } catch { }
+                return id + upgraded;
+            }).ToArray());
+        }
+
+        private string HeaderText(Player p2)
+        {
+            int cards = CurrentCount();
+            int energy = 0;
+            int stars = 0;
+            try { if (p2 != null && p2.PlayerCombatState != null) { energy = p2.PlayerCombatState.Energy; stars = p2.PlayerCombatState.Stars; } } catch { }
+            string head = "P2 手牌 (" + cards + "张) | 能量: " + energy;
+            if (stars > 0) head += " | 星: " + stars;
+            return head;
+        }
+
+        private void Refresh(bool force)
+        {
+            if (!_shown || _panel == null || _row == null || _title == null) return;
+            DateTime now = DateTime.UtcNow;
+            if (!force && (now - _lastScan).TotalMilliseconds < 200) return;
+            _lastScan = now;
+            Player p2 = FlowCoordinator.GetPlayer2();
+            string fp = CurrentFingerprint(p2) + "#" + HeaderText(p2) + "#" + ((int)GetViewportRect().Size.X);
+            if (!force && fp == _fingerprint) return;
+            _fingerprint = fp;
+            foreach (Node child in _row.GetChildren().ToArray()) { _row.RemoveChild(child); child.QueueFree(); }
+            _title.Text = HeaderText(p2);
+            int count = 0;
+            CardPile hand = p2 != null ? PileType.Hand.GetPile(p2) : null;
+            if (hand != null && hand.Cards != null)
+            {
+                foreach (CardModel card in hand.Cards)
+                {
+                    if (card == null) continue;
+                    count++;
+                    _row.AddChild(BuildCardWidget(card));
+                }
+            }
+            if (count == 0)
+            {
+                Label empty = new Label();
+                empty.Text = "（手牌为空）";
+                empty.MouseFilter = Control.MouseFilterEnum.Ignore;
+                empty.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f, 0.6f));
+                _row.AddChild(empty);
+            }
+            PositionPanel(count);
+        }
+
+        private void PositionPanel(int count)
+        {
+            if (_panel == null) return;
+            Vector2 vp = GetViewportRect().Size;
+            float scale = Math.Max(0.7f, Math.Min(1.2f, vp.Y / 900.0f));
+            float cardW = 150f * scale;
+            float cardH = 210f * scale;
+            int shown = Math.Max(1, count);
+            float width = Math.Min(vp.X * 0.72f, shown * (cardW + 10f) + 24f);
+            _panel.Position = new Vector2(Math.Max(40f, vp.X * 0.08f), Math.Max(80f, vp.Y * 0.14f));
+            _panel.CustomMinimumSize = new Vector2(Math.Max(280f, width), cardH + 62f);
+            if (!_probeLogged)
+            {
+                _probeLogged = true;
+                GD.Print("[AiTeammate][Coord] p2-hand-preview-layout pos=" + _panel.Position.X.ToString("F0") + "," + _panel.Position.Y.ToString("F0") + " size=" + _panel.CustomMinimumSize.X.ToString("F0") + "," + _panel.CustomMinimumSize.Y.ToString("F0"));
+            }
+        }
+
+        private Control BuildCardWidget(CardModel card)
+        {
+            Vector2 vp = GetViewportRect().Size;
+            float scale = Math.Max(0.7f, Math.Min(1.2f, vp.Y / 900.0f));
+
+            PanelContainer panel = new PanelContainer();
+            panel.MouseFilter = Control.MouseFilterEnum.Ignore;
+            panel.CustomMinimumSize = new Vector2(150f * scale, 210f * scale);
+            panel.Modulate = new Color(1f, 1f, 1f, 0.85f);
+            StyleBoxFlat box = new StyleBoxFlat();
+            box.BgColor = new Color(0.10f, 0.12f, 0.17f, 0.78f);
+            box.BorderColor = RarityBorder(card);
+            box.SetBorderWidthAll(2);
+            box.SetCornerRadiusAll(6);
+            box.SetContentMarginAll(6);
+            panel.AddThemeStyleboxOverride("panel", box);
+
+            VBoxContainer col = new VBoxContainer();
+            col.MouseFilter = Control.MouseFilterEnum.Ignore;
+            col.AddThemeConstantOverride("separation", 4);
+            panel.AddChild(col);
+
+            HBoxContainer top = new HBoxContainer();
+            top.MouseFilter = Control.MouseFilterEnum.Ignore;
+            top.AddThemeConstantOverride("separation", 6);
+            col.AddChild(top);
+
+            Label cost = new Label();
+            cost.Text = CostText(card);
+            cost.MouseFilter = Control.MouseFilterEnum.Ignore;
+            cost.AddThemeFontSizeOverride("font_size", 15);
+            cost.AddThemeColorOverride("font_color", new Color(0.85f, 0.93f, 1f, 0.95f));
+            top.AddChild(cost);
+
+            Label title = new Label();
+            string t = "?";
+            try { t = card.Title; } catch { }
+            if (string.IsNullOrEmpty(t)) { try { t = card.Id.ToString(); } catch { t = "?"; } }
+            bool upgraded = false;
+            try { upgraded = card.IsUpgraded; } catch { }
+            title.Text = (upgraded ? t + "+" : t);
+            title.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            title.MouseFilter = Control.MouseFilterEnum.Ignore;
+            title.AddThemeFontSizeOverride("font_size", 12);
+            title.AddThemeColorOverride("font_color", upgraded ? new Color(0.55f, 0.95f, 0.55f, 0.95f) : new Color(1f, 1f, 1f, 0.95f));
+            top.AddChild(title);
+
+            Label type = new Label();
+            type.Text = TypeText(card);
+            type.MouseFilter = Control.MouseFilterEnum.Ignore;
+            type.AddThemeFontSizeOverride("font_size", 10);
+            type.AddThemeColorOverride("font_color", new Color(0.75f, 0.80f, 0.88f, 0.85f));
+            col.AddChild(type);
+
+            Label desc = new Label();
+            desc.Text = StripBbcode(DescriptionText(card));
+            desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            desc.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
+            desc.MouseFilter = Control.MouseFilterEnum.Ignore;
+            desc.AddThemeFontSizeOverride("font_size", 10);
+            desc.AddThemeColorOverride("font_color", new Color(0.90f, 0.92f, 0.96f, 0.90f));
+            col.AddChild(desc);
+
+            return panel;
+        }
+
+        private static string CostText(CardModel card)
+        {
+            try
+            {
+                // HasEnergyCostX / CanonicalEnergyCost / CurrentStarCost are protected in CardModel,
+                // so they are read through reflection; EnergyCost itself is public.
+                object xFlag = Member(card, "HasEnergyCostX");
+                if (xFlag is bool && (bool)xFlag) return "X";
+                int c = 0;
+                bool got = false;
+                try { c = card.EnergyCost.GetResolved(); got = true; } catch { }
+                if (!got)
+                {
+                    object canon = Member(card, "CanonicalEnergyCost");
+                    if (canon != null) { try { c = Convert.ToInt32(canon); } catch { } }
+                }
+                string s = c.ToString();
+                object starObj = Member(card, "CurrentStarCost");
+                if (starObj != null)
+                {
+                    try { int star = Convert.ToInt32(starObj); if (star > 0) s = s + "*" + star; } catch { }
+                }
+                return s;
+            }
+            catch { return "?"; }
+        }
+
+        private static string TypeText(CardModel card)
+        {
+            try
+            {
+                string raw = card.Type.ToString();
+                if (raw.IndexOf("Attack", StringComparison.OrdinalIgnoreCase) >= 0) return "攻击";
+                if (raw.IndexOf("Skill", StringComparison.OrdinalIgnoreCase) >= 0) return "技能";
+                if (raw.IndexOf("Power", StringComparison.OrdinalIgnoreCase) >= 0) return "能力";
+                if (raw.IndexOf("Status", StringComparison.OrdinalIgnoreCase) >= 0) return "状态";
+                if (raw.IndexOf("Curse", StringComparison.OrdinalIgnoreCase) >= 0) return "诅咒";
+                return raw;
+            }
+            catch { return "卡牌"; }
+        }
+
+        private static Color RarityBorder(CardModel card)
+        {
+            try
+            {
+                string raw = card.Rarity.ToString();
+                if (raw.IndexOf("Rare", StringComparison.OrdinalIgnoreCase) >= 0) return new Color(0.95f, 0.78f, 0.25f, 0.9f);
+                if (raw.IndexOf("Uncommon", StringComparison.OrdinalIgnoreCase) >= 0) return new Color(0.42f, 0.72f, 0.95f, 0.9f);
+                if (raw.IndexOf("Special", StringComparison.OrdinalIgnoreCase) >= 0) return new Color(0.72f, 0.55f, 0.95f, 0.9f);
+            }
+            catch { }
+            return new Color(0.62f, 0.66f, 0.72f, 0.85f);
+        }
+
+        private static string DescriptionText(CardModel card)
+        {
+            try { return card.GetDescriptionForPile(PileType.Hand, null) ?? ""; } catch { }
+            try { return card.Description != null ? card.Description.GetFormattedText() : ""; } catch { }
+            return "";
+        }
+
+        // Godot Label renders BBCode literally, so strip [tags] instead of enabling rich text.
+        private static string StripBbcode(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(text.Length);
+            bool inside = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c == '[') { inside = true; continue; }
+                if (c == ']') { if (inside) { inside = false; continue; } }
+                if (!inside) sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        private static object Member(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                Type t = obj.GetType();
+                PropertyInfo p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null) { try { return p.GetValue(obj, null); } catch { } }
+                FieldInfo f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null) { try { return f.GetValue(obj); } catch { } }
+            }
+            catch { }
+            return null;
+        }
+
+        private bool IsMouseOverP2Character()
+        {
+            try
+            {
+                Player p2 = FlowCoordinator.GetPlayer2();
+                if (p2 == null) return false;
+                Vector2 mouse = GetViewport().GetMousePosition();
+                Rect2 rect = GetP2CharacterRect(p2);
+                return rect.HasPoint(mouse);
+            }
+            catch { return false; }
+        }
+
+        private Rect2 GetP2CharacterRect(Player p2)
+        {
+            Vector2 vp = GetViewportRect().Size;
+            float scale = Math.Max(0.65f, Math.Min(1.35f, vp.Y / 900.0f));
+            Rect2 fallback = new Rect2(
+                new Vector2(Math.Max(8f, vp.X * 0.012f), vp.Y * 0.25f),
+                new Vector2(Math.Min(vp.X * 0.28f, 380f * scale), Math.Min(vp.Y * 0.42f, 360f * scale)));
+            Rect2 live;
+            if (!TryGetCreatureRect(p2, out live)) return fallback;
+            float x0 = Math.Min(fallback.Position.X, live.Position.X);
+            float y0 = Math.Min(fallback.Position.Y, live.Position.Y);
+            float x1 = Math.Max(fallback.Position.X + fallback.Size.X, live.Position.X + live.Size.X);
+            float y1 = Math.Max(fallback.Position.Y + fallback.Size.Y, live.Position.Y + live.Size.Y);
+            return new Rect2(new Vector2(x0, y0), new Vector2(Math.Max(1f, x1 - x0), Math.Max(1f, y1 - y0)));
+        }
+
+        private static bool TryGetCreatureRect(Player p2, out Rect2 rect)
+        {
+            rect = new Rect2();
+            try
+            {
+                object room = NCombatRoom.Instance;
+                if (room == null || p2 == null || p2.Creature == null) return false;
+                IEnumerable nodes = Member(room, "CreatureNodes") as IEnumerable;
+                if (nodes == null) return false;
+                foreach (object entry in nodes)
+                {
+                    Control ctl = entry as Control;
+                    if (ctl == null || !GodotObject.IsInstanceValid(ctl)) continue;
+                    object creature = Member(entry, "Creature") ?? Member(entry, "Model");
+                    if (creature == null || !object.ReferenceEquals(creature, p2.Creature)) continue;
+                    Control hitbox = Member(entry, "Hitbox") as Control;
+                    if (hitbox != null && GodotObject.IsInstanceValid(hitbox))
+                    {
+                        Vector2 hp = hitbox.GlobalPosition;
+                        Vector2 hs = hitbox.Size;
+                        if (hs.X > 4f && hs.Y > 4f) { rect = new Rect2(hp, hs); return true; }
+                    }
+                    Vector2 gp = ctl.GlobalPosition;
+                    Vector2 gs = ctl.Size;
+                    if (gs.X > 4f && gs.Y > 4f) { rect = new Rect2(gp, gs); return true; }
+                    return false;
+                }
+            }
+            catch { }
+            return false;
+        }
+    }
+
     // Directive #5.19-R2: handler-level end-turn fallback and F9 hotkey.
     public static class EndTurnHandlerFallbackPatch
     {
@@ -25372,33 +33759,143 @@ private static void PatchFlowCoordinator(Harmony harmony)
     public static class ActionQueueOwnerPatch
     {
         static bool Covered(MegaCrit.Sts2.Core.GameActions.GameAction a){string n=a.GetType().Name;return n=="PlayCardAction"||n=="EndPlayerTurnAction"||n.IndexOf("UsePotion",StringComparison.OrdinalIgnoreCase)>=0;}
+
+        public static CardModel GetCardFromPlayCardAction(MegaCrit.Sts2.Core.GameActions.GameAction action)
+        {
+            if (action == null) return null;
+            MegaCrit.Sts2.Core.GameActions.PlayCardAction pca = action as MegaCrit.Sts2.Core.GameActions.PlayCardAction;
+            if (pca != null)
+            {
+                try
+                {
+                    var f = typeof(MegaCrit.Sts2.Core.GameActions.PlayCardAction).GetField("_card", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (f != null)
+                    {
+                        return f.GetValue(pca) as CardModel;
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        public static void TryCancelAction(MegaCrit.Sts2.Core.GameActions.GameAction action)
+        {
+            if (action == null) return;
+            try
+            {
+                var m = typeof(MegaCrit.Sts2.Core.GameActions.GameAction).GetMethod("CancelAction", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (m != null)
+                {
+                    m.Invoke(action, null);
+                }
+            }
+            catch { }
+        }
+
         public static bool Prefix(MegaCrit.Sts2.Core.GameActions.GameAction action)
         {
             try
             {
+                if (TurnCoordinator.IsTerminalCombatFinalized || TurnCoordinator.AreAllPlayersDead())
+                {
+                    TurnCoordinator.LogTerminalCombatFinalized("all-players-dead");
+                    return false;
+                }
                 EndTurnR1Telemetry.EnqueueLayer(action, "ActionQueueSynchronizer.RequestEnqueue");
                 if (action == null || !Covered(action)) return true;
-                ulong owner = action.OwnerId;
-                ulong local = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
-                if (owner == 0 || local == 0 || owner == local) return true;
-                if (TurnCoordinator.FixedP1CombatControl && TurnCoordinator.IsP2Target(owner))
+
+                ulong p1NetId = TurnCoordinator.GetPlayer1NetId();
+                ulong p2NetId = TurnCoordinator.GetPlayer2NetId();
+                ulong actionOwner = action.OwnerId;
+
+                CardModel card = GetCardFromPlayCardAction(action);
+                if (card != null && card.Owner != null)
                 {
-                    GD.Print(string.Format("[AiTeammate][Coord] enqueue-owner-mismatch-corrected actionOwner={0} queueOwner={1} corrected=True action={2} fixed-p1-scope=true", owner, local, action.GetType().Name));
+                    ulong cardOwnerId = card.Owner.NetId;
+                    if (TurnCoordinator.IsP2Target(cardOwnerId) || TurnCoordinator.IsPlayer2(card.Owner))
+                    {
+                        MegaCrit.Sts2.Core.GameActions.PlayCardAction pca = action as MegaCrit.Sts2.Core.GameActions.PlayCardAction;
+                        if (actionOwner != p2NetId && pca != null)
+                        {
+                            try
+                            {
+                                var pField = typeof(MegaCrit.Sts2.Core.GameActions.PlayCardAction).GetField("<Player>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                                if (pField != null)
+                                {
+                                    pField.SetValue(pca, FlowCoordinator.GetPlayer2() ?? card.Owner);
+                                }
+                            }
+                            catch { }
+                            actionOwner = p2NetId;
+                        }
+                    }
+                }
+                string cardStr = card != null ? card.Id.ToString() : action.GetType().Name;
+
+                if (TurnCoordinator.IsP2Target(actionOwner) && action is MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction)
+                {
+                    Player p2 = FlowCoordinator.GetPlayer2();
+                    // Directive #5.48 Priority 1: Pass action to gate
+                    if (p2 != null && !TurnCoordinator.CheckP2EndTurnGate(p2, "ActionQueueSynchronizer.RequestEnqueue", action))
+                    {
+                        return false;
+                    }
+                }
+
+                ulong local = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                bool isP2Action = TurnCoordinator.IsP2Target(actionOwner) || (card != null && card.Owner != null && (TurnCoordinator.IsP2Target(card.Owner.NetId) || TurnCoordinator.IsPlayer2(card.Owner)));
+
+                if (isP2Action)
+                {
+                    // Directive #5.56 Task 1: P2 action MUST enter P2 queue!
+                    // P1 foreground only affects UI, never changes action owner or queue owner!
+                    if (p2NetId != 0 && local != p2NetId)
+                    {
+                        LocalContext.NetId = p2NetId;
+                        local = p2NetId;
+                    }
+
+                    // Directive #5.56 Task 3: Mandatory diagnostic check
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-action-owner-check actionOwner={0} queueOwner={1} card={2}", actionOwner, local, cardStr));
+
+                    // Directive #5.56 Task 3: Fail-closed validation
+                    if (actionOwner != local || !TurnCoordinator.IsP2Target(local))
+                    {
+                        GD.PrintErr(string.Format("[AiTeammate][Coord] p2-action-owner-mismatch-blocked actionOwner={0} queueOwner={1} card={2} reason=p2-queue-mismatch fail-closed", actionOwner, local, cardStr));
+                        TryCancelAction(action);
+                        return false;
+                    }
                     return true;
                 }
-                LocalContext.NetId = owner;
-                GD.Print(string.Format("[AiTeammate][Coord] enqueue-owner-mismatch-corrected actionOwner={0} queueOwner={1} corrected=True action={2}", owner, local, action.GetType().Name));
-                return true;
+                else
+                {
+                    // Action belongs to P1 or non-P2
+                    // Directive #5.58-B Task 1: P1 manual actions MUST NOT be canceled during P2 deployment!
+                    bool isP2Deploying = TurnCoordinator.IsDeploying || TurnCoordinator.IsSolverDeploying();
+                    if (TurnCoordinator.FixedP1CombatControl && p1NetId != 0 && (actionOwner == p1NetId || actionOwner == 0))
+                    {
+                        if (local != p1NetId)
+                        {
+                            LocalContext.NetId = p1NetId;
+                            local = p1NetId;
+                        }
+                    }
+
+                    // Record final enqueued queueOwner and actionOwner
+                    GD.Print(string.Format("[AiTeammate][Coord] p1-action-enqueue-confirmed actionOwner={0} queueOwner={1} card={2} p2Deploying={3}",
+                        actionOwner, local, cardStr, isP2Deploying));
+
+                    return true;
+                }
             }
             catch (Exception ex)
             {
-                GD.PrintErr("[AiTeammate][Coord] enqueue-rejected: " + ex.Message);
-                return false;
+                GD.PrintErr("[AiTeammate][Coord] enqueue-patch-exception: " + ex);
+                return true;
             }
         }
     }
-
-    // Directive #5.13 T2: Effect Attribution Guard & Execution Window Nails
 
     public static class AttributionPatches
 
@@ -25409,6 +33906,15 @@ private static void PatchFlowCoordinator(Harmony harmony)
             public bool HadPrevious;
             public ulong Previous;
             public bool PreviousSuppressUi;
+        }
+
+        public static bool HasP2SenderScope(MegaCrit.Sts2.Core.GameActions.GameAction action)
+        {
+            if (action == null) return false;
+            lock (P2SenderScopes)
+            {
+                return P2SenderScopes.ContainsKey(action);
+            }
         }
 
         private static readonly Dictionary<MegaCrit.Sts2.Core.GameActions.GameAction, P2SenderScopeState> P2SenderScopes =
@@ -25447,8 +33953,46 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     else LocalContext.NetId = null;
                     ModEntry.SuppressControlSwitchUi = p2Scope.PreviousSuppressUi;
                     if (TurnCoordinator.P2ActionSenderScopeDepth > 0) TurnCoordinator.P2ActionSenderScopeDepth--;
-                    TurnCoordinator.MarkP1RestoreAfterP2Scope("action=" + action.GetType().Name + ":" + source);
-                    if (TurnCoordinator.P2ActionSenderScopeDepth == 0) TurnCoordinator.QueueP1RestoreAfterP2Scope();
+                    if (action is MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction)
+                    {
+                        // Directive #5.57: For EndPlayerTurnAction, defer P1 UI restore until native phase transition signal
+                        // Directive #5.58-C: Unlock input lock once P2 EndPlayerTurnAction completes
+                        ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                        ulong draId = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                        if (TurnCoordinator.FixedP1CombatControl && p1Id != 0 && LocalContext.NetId != p1Id)
+                        {
+                            LocalContext.NetId = p1Id;
+                        }
+                        ulong localId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                        bool p2Completed = (source == "after-action-finished" || source == "execute-task-continue");
+                        if (TurnCoordinator.IsP2Target(action.OwnerId) &&
+                            p2Completed &&
+                            !TurnCoordinator.IsPlayer1Dead() &&
+                            TurnCoordinator.P2ActionSenderScopeDepth == 0)
+                        {
+                            var cm = CombatManager.Instance;
+                            if (cm != null)
+                            {
+                                var state = cm.DebugOnlyGetState();
+                                Player p1 = (state != null && state.Players != null && state.Players.Count > 0) ? state.Players[0] : null;
+                                if (p1 == null || !cm.IsPlayerReadyToEndTurn(p1))
+                                {
+                                    TurnFlowPatches.SetPlayerActionsDisabled(cm, false);
+                                    TurnCoordinator.RefreshPlayerHandVisuals(state);
+                                    TurnFlowPatches.RefreshPlayer1CombatUiMinimal();
+                                    GD.Print(string.Format("[AiTeammate][Coord] p2-endturn-actions-unlocked action={0} owner={1} p1={2} dra={3} local={4} disabled=false",
+                                        action.GetType().Name, action.OwnerId, p1Id, draId, localId));
+                                }
+                            }
+                            TurnCoordinator.MarkP1RestoreAfterP2Scope("action=EndPlayerTurnAction:" + source);
+                            TurnCoordinator.QueueP1RestoreAfterP2Scope();
+                        }
+                    }
+                    else
+                    {
+                        TurnCoordinator.MarkP1RestoreAfterP2Scope("action=" + action.GetType().Name + ":" + source);
+                        if (TurnCoordinator.P2ActionSenderScopeDepth == 0) TurnCoordinator.QueueP1RestoreAfterP2Scope();
+                    }
                     GD.Print("[AiTeammate][Coord] p2-action-sender-scope end owner=P2 action=" + action.GetType().Name + " source=" + source);
                     GD.Print("[AiTeammate][Coord] p2-action-executed owner=P2 action=" + action.GetType().Name);
                     TurnCoordinator.LogFixedP1StateCheck("p2-action-scope-end", action.OwnerId);
@@ -25461,9 +34005,18 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     TurnCoordinator.IsP1ActionExecuting = false;
                 }
 
+                if (action != null && object.ReferenceEquals(TurnCoordinator.CurrentExecutingActionInstance, action))
+                {
+                    TurnCoordinator.CurrentExecutingActionInstance = null;
+                }
                 if (action != null && TurnCoordinator.CurrentExecutingActionOwnerNetId == action.OwnerId)
                 {
                     TurnCoordinator.CurrentExecutingActionOwnerNetId = 0;
+                }
+
+                if (TurnCoordinator.PendingPotionContinuation && !TurnCoordinator.PotionContinuationScheduled)
+                {
+                    TurnCoordinator.CheckPotionContinuation("action-exit");
                 }
             }
             catch (Exception ex)
@@ -25483,7 +34036,17 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     // Directive #5.34 T0.5: Backend action executed output
                     GD.Print(string.Format("[AiTeammate][Coord] backend-action-executed action={0} owner={1}", __instance.GetType().Name, __instance.OwnerId));
 
+                    TurnCoordinator.CurrentExecutingActionInstance = __instance;
                     TurnCoordinator.CurrentExecutingActionOwnerNetId = __instance.OwnerId;
+
+                    // Directive #5.48 Priority 2: Action cancellation path observation
+                    __instance.BeforeCancelled += delegate(MegaCrit.Sts2.Core.GameActions.GameAction a)
+                    {
+                        GD.Print(string.Format("[AiTeammate][Coord] action-cancel-observed actionId={0} action={1} owner={2}",
+                            a != null ? a.Id.ToString() : "null",
+                            a != null ? a.GetType().Name : "unknown",
+                            a != null ? a.OwnerId.ToString() : "0"));
+                    };
 
                     ulong p2Id = TurnCoordinator.GetPlayer2NetId();
                     if (TurnCoordinator.FixedP1CombatControl && p2Id != 0 && __instance.OwnerId == p2Id)
@@ -25540,6 +34103,13 @@ private static void PatchFlowCoordinator(Harmony harmony)
             public static void Postfix(MegaCrit.Sts2.Core.GameActions.GameAction action)
             {
                 AttributionPatches.ExitActionExecutionScope(action, "after-action-finished");
+                // Directive #5.48 Priority 4: Ensure potion completion is processed upon action exit
+                if (action is MegaCrit.Sts2.Core.GameActions.UsePotionAction && TurnCoordinator.IsP2Target(action.OwnerId))
+                {
+                    var upa = action as MegaCrit.Sts2.Core.GameActions.UsePotionAction;
+                    string status = action.State == MegaCrit.Sts2.Core.Entities.Actions.GameActionState.Canceled ? "canceled" : "completed";
+                    TurnCoordinator.HandlePotionActionCompleted(upa, status, null);
+                }
             }
         }
 
@@ -25867,7 +34437,9 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 {
 
-                    if (TurnCoordinator.IsP1ActionExecuting)
+                    ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                    bool isP1Recovery = (playerId == p1Id && TurnCoordinator.IsP1RecoverySource(source));
+                    if (TurnCoordinator.IsP1ActionExecuting && !isP1Recovery)
 
                     {
 
@@ -25881,7 +34453,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                     ulong p2Id = TurnCoordinator.GetPlayer2NetId();
 
-                    if (playerId == TurnCoordinator.GetPlayer1NetId() && TurnCoordinator.IsP1RecoverySource(source))
+                    if (isP1Recovery)
                     {
                         return true;
                     }
@@ -25921,9 +34493,27 @@ private static void PatchFlowCoordinator(Harmony harmony)
             try
 
             {
+                ulong p1Id = TurnCoordinator.GetPlayer1NetId();
+                ulong fromController = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong toController = playerId;
+                ulong localNetId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                string roomCombatState = TurnCoordinator.IsInCombat() ? "Combat" : (TurnCoordinator.IsInEventRoom() ? "EventRoom" : "OutOfCombat");
+                bool eventAutoP2 = TurnCoordinator.IsInEventRoom() && TurnCoordinator.IsP2Target(playerId) && TurnCoordinator.IsAutoEventSource(source);
+
+                if (eventAutoP2 && FlowCoordinator.P2EventManualTakeover)
+                {
+                    if (FlowCoordinator.ShouldLogEventController("event-auto-switch-allowed", source))
+                        GD.Print(string.Format("[AiTeammate][Event] event-auto-switch-allowed source={0} target=P2 reason=manual-takeover", source ?? "unknown"));
+                    return true;
+                }
+
+                // Directive #5.58-B Task 4: Audit control switches
+                if (!eventAutoP2 || FlowCoordinator.ShouldLogEventController("control-switch-audit", source))
+                    GD.Print(string.Format("[AiTeammate][Coord] control-switch-audit source={0} fromController={1} toController={2} localNetId={3} state={4}",
+                        source ?? "unknown", fromController, toController, localNetId, roomCombatState));
 
                 // Directive #5.17 T3: forced resolve before user-driven room/control leave.
-                if (SwitchSourceAuditor.IsInteractive(source) && playerId != TurnCoordinator.GetPlayer1NetId()) TurnCoordinator.GuardPendingChoicesBeforeLeave("control-switch:" + (source ?? "unknown"));
+                if (SwitchSourceAuditor.IsInteractive(source) && playerId != p1Id) TurnCoordinator.GuardPendingChoicesBeforeLeave("control-switch:" + (source ?? "unknown"));
                 // Directive #5.14 T1: During room enter window, all non-interactive switches are deferred/blocked
 
                 if (TurnCoordinator.IsEnteringRoom)
@@ -25944,6 +34534,20 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
+                // Directive #5.63: Suppress non-interactive reward offer switches targeting P2
+                bool isRewardOffer = string.Equals(source, "rewards-offer", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(source, "merged-rewards-offer", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(source, "merged-rewards-offer-from-combatroom", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(source, "merged-rewards-offer-from-rewardsset", StringComparison.OrdinalIgnoreCase) ||
+                                     (source != null && source.StartsWith("rewards-offer", StringComparison.OrdinalIgnoreCase));
+
+                if (isRewardOffer && TurnCoordinator.IsP2Target(playerId))
+                {
+                    GD.Print(string.Format("[AiTeammate][Coord] reward-offer-p2-switch-suppressed source={0} target=P2", source ?? "unknown"));
+                    FlowCoordinator.EnsureP1PotionUiBound("reward-offer-switch-suppressed");
+                    return false;
+                }
+
                 // Directive #5.31: EventRoom P1 Foreground Lock for Auto Event Sources (BEFORE non-combat return!)
                 if (TurnCoordinator.IsInEventRoom())
                 {
@@ -25951,7 +34555,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     bool isP2 = TurnCoordinator.IsP2Target(playerId);
                     if (isAuto && isP2)
                     {
-                        GD.Print(string.Format("[AiTeammate][Event] event-auto-switch-suppressed source={0} target=P2", source ?? "unknown"));
+                        if (FlowCoordinator.ShouldLogEventController("event-auto-switch-suppressed", source))
+                            GD.Print(string.Format("[AiTeammate][Event] event-auto-switch-suppressed source={0} target=P2", source ?? "unknown"));
 
                         if (RunManager.Instance != null && RunManager.Instance.EventSynchronizer != null)
                         {
@@ -25962,14 +34567,14 @@ private static void PatchFlowCoordinator(Harmony harmony)
                             }
                         }
 
-                        ulong p1Id = TurnCoordinator.GetPlayer1NetId();
                         ulong actual = TurnFlowPatches.GetDraCurrentControlledPlayerId();
                         if (p1Id != 0 && actual != p1Id)
                         {
                             TurnFlowPatches.SwitchControlToPlayer(p1Id, "wakuu-p1-restore:event-auto-suppressed", false);
                         }
                         string finalCtrl = (actual == p1Id || (p1Id != 0 && TurnFlowPatches.GetDraCurrentControlledPlayerId() == p1Id)) ? "P1" : actual.ToString();
-                        GD.Print(string.Format("[AiTeammate][Event] event-room-final-controller expected=P1 actual={0}", finalCtrl));
+                        if (FlowCoordinator.ShouldLogEventController("event-room-final-controller", finalCtrl))
+                            GD.Print(string.Format("[AiTeammate][Event] event-room-final-controller expected=P1 actual={0}", finalCtrl));
 
                         return false;
                     }
@@ -25979,6 +34584,12 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 if (!TurnCoordinator.IsInCombat())
                 {
+                    if (FlowCoordinator.P2EventManualTakeover && TurnCoordinator.IsInEventRoom() && TurnCoordinator.IsP2Target(playerId))
+                    {
+                        if (FlowCoordinator.ShouldLogEventController("event-manual-p2-switch-allowed", source))
+                            GD.Print(string.Format("[AiTeammate][Event] event-manual-p2-switch-allowed source={0} target=P2", source ?? "unknown"));
+                        return true;
+                    }
                     if (TurnCoordinator.IsFullRunP1ControlLockActive() && TurnCoordinator.IsP2Target(playerId))
                     {
                         GD.Print(string.Format("[AiTeammate][Coord] out-of-combat-p2-switch-blocked source={0} target={1}", source ?? "unknown", playerId));
@@ -26005,7 +34616,9 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
-                if (TurnCoordinator.IsP1ActionExecuting)
+                // Directive #5.58-B Task 2: P1 recovery requests must penetrate action execution window!
+                bool isP1Recovery = (playerId == p1Id && TurnCoordinator.IsP1RecoverySource(source));
+                if (TurnCoordinator.IsP1ActionExecuting && !isP1Recovery)
 
                 {
 
@@ -26023,8 +34636,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 // Directive #5.13 T1: Root suppression: in combat, all non-interactive switches are blocked!
 
-                if (!SwitchSourceAuditor.IsInteractive(source) &&
-                    !(playerId == TurnCoordinator.GetPlayer1NetId() && TurnCoordinator.IsP1RecoverySource(source)))
+                if (!SwitchSourceAuditor.IsInteractive(source) && !isP1Recovery)
 
                 {
 
@@ -26093,6 +34705,13 @@ private static void PatchFlowCoordinator(Harmony harmony)
             try
 
             {
+                ulong fromController = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong localNetId = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+                string roomCombatState = TurnCoordinator.IsInCombat() ? "Combat" : (TurnCoordinator.IsInEventRoom() ? "EventRoom" : "OutOfCombat");
+
+                // Directive #5.58-B Task 4: Audit apply control
+                GD.Print(string.Format("[AiTeammate][Coord] apply-control-audit source={0} fromController={1} toController={2} localNetId={3} state={4}",
+                    source ?? "unknown", fromController, fromController, localNetId, roomCombatState));
 
                 // Directive #5.14 T1: During room enter window, all non-interactive switches are deferred/blocked
 
@@ -26116,6 +34735,14 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 if (!TurnCoordinator.IsInCombat())
                 {
+                    if (string.Equals(source, "run-launched", StringComparison.OrdinalIgnoreCase))
+                    {
+                        TurnCoordinator.ResetRunStartIdentityToP1("run-launched");
+                        return false;
+                    }
+
+                    TurnCoordinator.CheckAndRecoverRunIdentity("ApplyControlContext:" + (source ?? "unknown"));
+
                     if (TurnCoordinator.IsFullRunP1ControlLockActive())
                     {
                         ulong draCurrent = TurnFlowPatches.GetDraCurrentControlledPlayerId();
@@ -26168,7 +34795,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
-                if (TurnCoordinator.IsP1ActionExecuting)
+                // Directive #5.58-B Task 2: P1 recovery requests must penetrate action execution window!
+                if (TurnCoordinator.IsP1ActionExecuting && !p1Recovery)
 
                 {
 
@@ -26670,10 +35298,39 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
+        public static bool IsTerminalGameOverScreen(object screen)
+        {
+            if (screen == null) return false;
+            string typeName = screen.GetType().Name;
+            return typeName == "NGameOverScreen" ||
+                   typeName == "GameOverScreen" ||
+                   typeName == "NDefeatScreen" ||
+                   typeName == "DefeatScreen" ||
+                   typeName == "NVictoryScreen" ||
+                   typeName == "VictoryScreen";
+        }
+
         public static bool OverlayStackPushPrefix(object __instance, object screen)
         {
             try
             {
+                // Directive #5.54 T1: Terminal overlay whitelist - must check first before any suppression/owner checks
+                if (IsTerminalGameOverScreen(screen))
+                {
+                    bool p1Dead;
+                    bool p2Dead;
+                    bool allDead = TurnCoordinator.AreAllPlayersDead(out p1Dead, out p2Dead);
+                    TurnCoordinator.IsTerminalCombatFinalized = true;
+                    TurnCoordinator.ClearAllP1Choices("terminal-game-over");
+                    TurnCoordinator.DisarmIndependentP2Lifeline("terminal-overlay-allowed");
+                    GD.Print(string.Format("[AiTeammate][Coord] terminal-overlay-allowed screen={0} reason=terminal-result p1-dead={1} p2-dead={2} all-dead={3}",
+                        screen != null ? screen.GetType().Name : "null",
+                        p1Dead,
+                        p2Dead,
+                        allDead));
+                    return true;
+                }
+
                 if (RewardBackendFlow.AllowNativeRewardOverlay(screen)) return true;
 
                 // Directive #3.9.2: Never suppress outside combat
@@ -26819,6 +35476,491 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
+    // Directive #5.87: CombatSolver is a single-player solver. Multiplayer-only ally/player-targeted
+    // cards (CARD.INTERCEPT, CARD.MIMIC, ...) are simulated with CardPlay.Target == null, and
+    // CardOnPlayMirrorContext.get_Target() throws InvalidOperationException("CardPlay has no target
+    // creature.") in that case, which aborts the whole beam search (SEARCH_FAILURE ->
+    // SearchTransitionException on replay). This prefix supplies a synthetic target at runtime.
+    // CombatSolver.dll on disk is never modified.
+
+    // Directive #5.98 Task 1: Pure in-memory runtime injection of all 22 CombatSolver patches
+    public static class CombatSolverInMemoryPatcher
+    {
+        private static bool _applied = false;
+        private static readonly object _lock = new object();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        private struct PatchDef
+        {
+            public int FileOffset;
+            public string ExpectedOrigHex;
+            public string NewHex;
+            public string Label;
+
+            public PatchDef(int fileOffset, string expectedOrigHex, string newHex, string label)
+            {
+                FileOffset = fileOffset;
+                ExpectedOrigHex = expectedOrigHex;
+                NewHex = newHex;
+                Label = label;
+            }
+        }
+
+        private static byte[] HexToBytes(string hex)
+        {
+            int len = hex.Length;
+            byte[] bytes = new byte[len / 2];
+            for (int i = 0; i < len; i += 2)
+            {
+                bytes[i / 2] = Convert.ToByte(hex.Substring(i, 2), 16);
+            }
+            return bytes;
+        }
+
+        private static bool BytesEqual(byte[] a, int aOffset, byte[] b, int bOffset, int length)
+        {
+            for (int i = 0; i < length; i++)
+            {
+                if (a[aOffset + i] != b[bOffset + i]) return false;
+            }
+            return true;
+        }
+
+        private static readonly PatchDef[] Patches = new PatchDef[]
+        {
+            new PatchDef(0x67e9b, "282e06000a", "162a000000", "Patch 1: get_IsMultiplayerSession"),
+            new PatchDef(0x69007, "330c288e1400066fde130006", "320c17000000000000000000", "Patch 2: BeginCombat"),
+            new PatchDef(0x691c7, "3367", "3267", "Patch 3: ActivateTurnSetupResult"),
+            new PatchDef(0x6cc2a, "4098000000", "3f98000000", "Patch 4: MonitorCombatPresence"),
+            new PatchDef(0x6f627, "2e09", "2f09", "Patch 5: CanSolve"),
+            new PatchDef(0x6e194, "7e05080004", "1600000000", "Patch 6a: StopFullAutoOnWorseResult"),
+            new PatchDef(0x6e2a9, "7e03080004", "1600000000", "Patch 6b: StopFullAutoOnCombatEnd"),
+            new PatchDef(0x6e322, "7e04080004", "1600000000", "Patch 6c: StopFullAutoOnDeathTurn"),
+            new PatchDef(0x16ea21, "3307", "3207", "Patch 7: ToggleVisibilityFromShortcut"),
+            new PatchDef(0xa5b27, "2e0b", "2f0b", "Patch 8: SolveCore"),
+            new PatchDef(0x1a1fcc, "2e37", "2f37", "Patch 9: HandleMultiplayerScaling"),
+            new PatchDef(0x186bff, "03027bf51600042e0b", "16162e100000000000", "Patch 10: CombatPredictionHistory.GetCounters"),
+            new PatchDef(0x50ab1, "2e0c", "2f0c", "Patch 11: IsEligibleOpening"),
+            new PatchDef(0x4efe5, "2e03", "2f03", "Patch 12: CombatReplayRecording.Start"),
+            new PatchDef(0x509b7a, "4517ac74", "8b15ac74", "Patch 13: MethodSpec 0x2b0002e2 -> Enumerable.Last"),
+            new PatchDef(0x363fc2, "9100", "9600", "Patch 14a: GetSinglePlayer public static"),
+            new PatchDef(0x45715, "2e02", "2f02", "Patch 14b: GetSinglePlayer allow >=1"),
+            new PatchDef(0x45719, "026fc008000a166fc908000a2a", "026fc008000a28e202002b002a", "Patch 14c: GetSinglePlayer return Last()"),
+            new PatchDef(0x18c06d, "2e03", "2f03", "Patch 16a: CombatPredictionSimulator..ctor allow >=1"),
+            new PatchDef(0x18c073, "6fc008000a166fc908000a", "6fc008000a28e202002b00", "Patch 16b: CombatPredictionSimulator..ctor Last()"),
+            new PatchDef(0x1b45e2, "2e0b", "2f0b", "Patch 17a: PreCombatLiveStateSnapshot.Capture allow >=1"),
+            new PatchDef(0x1b461a, "6fbf0d000a166fc908000a", "6fbf0d000a28e202002b00", "Patch 17b: PreCombatLiveStateSnapshot.Capture Last()"),
+            new PatchDef(0x1ab6ac, "72fc230770038c8503001b6f3706000a6fc805000a722224077028fe05000a731b06000a7a", "2a000000000000000000000000000000000000000000000000000000000000000000000000", "Patch 18a: ForkMap.Register ret early"),
+            new PatchDef(0x1ab84d, "72fc230770038c8503001b6f3706000a6fc805000a724824077028fe05000a731b06000a7a", "032a0000000000000000000000000000000000000000000000000000000000000000000000", "Patch 18b: ForkMap.RequireRemap ldarg.1; ret"),
+            new PatchDef(0x7a678, "031a33090228931400060b2b45", "0228931400060b2b4900000000", "Patch 19: ApplyPerformancePreset"),
+            new PatchDef(0x4ffcf, "288508000a", "2626261700", "Patch 20a: CombatRootSnapshot.Capture"),
+            new PatchDef(0x50022, "288508000a", "2626261700", "Patch 20b: CombatRootSnapshot.Capture"),
+            new PatchDef(0x6d948, "28090d0006", "2626160000", "Patch 21a: CompleteSearchCore SEARCH_STALE bypass"),
+            new PatchDef(0x6d8b0, "166f43120006", "260000000000", "Patch 21b: CompleteSearchCore preserve FullAutoEnabled"),
+            new PatchDef(0x69a27, "28ef0c0006120f1f331728d105000a120f724c29027028d205000a120f0728fd03002b120f28d605000a6fb60c00062a", "2b2e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", "Patch 22: RequestSearch early ret bypass")
+        };
+
+        public static void ApplyIfNeeded(Assembly csAsm)
+        {
+            if (_applied || csAsm == null) return;
+            lock (_lock)
+            {
+                if (_applied) return;
+
+                try
+                {
+                    IntPtr baseAddr = IntPtr.Zero;
+                    try
+                    {
+                        baseAddr = Marshal.GetHINSTANCE(csAsm.ManifestModule);
+                    }
+                    catch { }
+
+                    if (baseAddr == IntPtr.Zero || baseAddr == (IntPtr)(-1))
+                    {
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(csAsm.Location))
+                            {
+                                baseAddr = GetModuleHandle(csAsm.Location);
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (baseAddr == IntPtr.Zero || baseAddr == (IntPtr)(-1))
+                    {
+                        try
+                        {
+                            baseAddr = GetModuleHandle("CombatSolver.dll");
+                        }
+                        catch { }
+                    }
+
+                    if (baseAddr == IntPtr.Zero || baseAddr == (IntPtr)(-1))
+                    {
+                        GD.PrintErr("[AiTeammate][MemPatch] Failed to resolve base address for CombatSolver assembly.");
+                        return;
+                    }
+
+                    IntPtr textStart = IntPtr.Add(baseAddr, 0x2000);
+                    int textSize = 0x7150C0;
+
+                    uint oldProt;
+                    if (!VirtualProtect(textStart, (UIntPtr)textSize, 0x40 /* PAGE_EXECUTE_READWRITE */, out oldProt))
+                    {
+                        int err = Marshal.GetLastWin32Error();
+                        GD.PrintErr("[AiTeammate][MemPatch] VirtualProtect failed with error: " + err);
+                        return;
+                    }
+
+                    byte[] textBytes = new byte[textSize];
+                    Marshal.Copy(textStart, textBytes, 0, textSize);
+
+                    int newlyPatched = 0;
+                    int alreadyPatched = 0;
+                    int mismatched = 0;
+
+                    for (int pIdx = 0; pIdx < Patches.Length; pIdx++)
+                    {
+                        PatchDef p = Patches[pIdx];
+                        int relOffset = p.FileOffset - 0x200;
+                        byte[] exp = HexToBytes(p.ExpectedOrigHex);
+                        byte[] rep = HexToBytes(p.NewHex);
+
+                        if (BytesEqual(textBytes, relOffset, rep, 0, rep.Length))
+                        {
+                            alreadyPatched++;
+                        }
+                        else if (BytesEqual(textBytes, relOffset, exp, 0, exp.Length))
+                        {
+                            Marshal.Copy(rep, 0, IntPtr.Add(textStart, relOffset), rep.Length);
+                            Array.Copy(rep, 0, textBytes, relOffset, rep.Length);
+                            newlyPatched++;
+                        }
+                        else
+                        {
+                            mismatched++;
+                            GD.PrintErr("[AiTeammate][MemPatch] MISMATCH at " + p.Label + " (file=0x" + p.FileOffset.ToString("X6") + ", rva=0x" + (p.FileOffset + 0x1E00).ToString("X6") + ")");
+                        }
+                    }
+
+                    // Patch 15: scan-and-replace calls to LocalContext.GetMe(CombatState) (28 87 0A 00 0A) with GetSinglePlayer(CombatState) (28 EF 09 00 06)
+                    byte[] needle = HexToBytes("28870a000a");
+                    byte[] repl = HexToBytes("28ef090006");
+                    int getMeCount = 0;
+
+                    for (int i = 0; i <= textSize - 5; i++)
+                    {
+                        if (textBytes[i] == needle[0] && BytesEqual(textBytes, i, needle, 0, 5))
+                        {
+                            Marshal.Copy(repl, 0, IntPtr.Add(textStart, i), 5);
+                            Array.Copy(repl, 0, textBytes, i, 5);
+                            getMeCount++;
+                            i += 4;
+                        }
+                    }
+
+                    uint restoreProt;
+                    VirtualProtect(textStart, (UIntPtr)textSize, oldProt, out restoreProt);
+
+                    _applied = true;
+                    GD.Print("[AiTeammate][MemPatch] CombatSolver in-memory patch complete: newlyPatched=" + newlyPatched + ", alreadyPatched=" + alreadyPatched + ", getMeReplaced=" + getMeCount + ", mismatched=" + mismatched);
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr("[AiTeammate][MemPatch] ApplyIfNeeded exception: " + ex);
+                }
+            }
+        }
+    }
+
+    // Directive #5.98 Task 2: Harmony runtime insurance fallback hooks for key CombatSolver entry points
+    public static class CombatSolverInsurancePatches
+    {
+        public static bool IsMultiplayerSessionPrefix(ref bool __result)
+        {
+            __result = false;
+            return false;
+        }
+
+        public static bool GetSinglePlayerPrefix(object __0, ref object __result)
+        {
+            try
+            {
+                CombatState state = __0 as CombatState;
+                if (state != null && state.Players != null && state.Players.Count > 0)
+                {
+                    __result = state.Players[state.Players.Count - 1];
+                    return false;
+                }
+                if (__0 != null)
+                {
+                    PropertyInfo prop = AccessTools.Property(__0.GetType(), "Players");
+                    if (prop != null)
+                    {
+                        System.Collections.IList list = prop.GetValue(__0, null) as System.Collections.IList;
+                        if (list != null && list.Count > 0)
+                        {
+                            __result = list[list.Count - 1];
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr("[AiTeammate][MemPatch] GetSinglePlayerPrefix error: " + ex.Message);
+            }
+            return false;
+        }
+
+        public static Exception RegisterFinalizer(Exception __exception)
+        {
+            return null;
+        }
+
+        public static Exception RequireRemapFinalizer(Exception __exception, object __0, ref object __result)
+        {
+            if (__exception != null)
+            {
+                __result = __0;
+                return null;
+            }
+            return null;
+        }
+    }
+
+    public static class CombatSolverMirrorFallbackPatches
+    {
+        private static int _targetFallbacks = 0;
+        private static int _targetPlayerFallbacks = 0;
+        private static PropertyInfo _ctxCardPlayProp;
+        private static FieldInfo _ctxCardPlayField;
+        private static PropertyInfo _cardPlayTargetProp;
+
+        public static Type FindContextType()
+        {
+            try
+            {
+                Type direct = AccessTools.TypeByName("CombatSolver.Engine.InCombat.Mirrors.Cards.OnPlay.CardOnPlayMirrorContext");
+                if (direct != null) return direct;
+            }
+            catch { }
+            try
+            {
+                foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (asm == null || asm.IsDynamic) continue;
+                    string name = null;
+                    try { name = asm.GetName().Name; } catch { }
+                    if (name == null || name.IndexOf("CombatSolver", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    Type[] types;
+                    try { types = asm.GetTypes(); }
+                    catch (ReflectionTypeLoadException rtle) { types = rtle.Types; }
+                    catch { continue; }
+                    if (types == null) continue;
+                    foreach (Type t in types) if (t != null && t.Name == "CardOnPlayMirrorContext") return t;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        public static void TryInstall(Harmony harmony)
+        {
+            try
+            {
+                Type ctx = FindContextType();
+                if (ctx == null)
+                {
+                    GD.PrintErr("[AiTeammate][Coord] CardOnPlayMirrorContext not found; ally-target mirror fallback disabled.");
+                    return;
+                }
+                _ctxCardPlayProp = AccessTools.Property(ctx, "CardPlay");
+                _ctxCardPlayField = AccessTools.Field(ctx, "<CardPlay>k__BackingField");
+                MethodInfo targetGetter = AccessTools.PropertyGetter(ctx, "Target");
+                if (targetGetter != null)
+                {
+                    harmony.Patch(targetGetter, new HarmonyMethod(typeof(CombatSolverMirrorFallbackPatches), "TargetPrefix"));
+                    GD.Print("[AiTeammate][Coord] Hooked CardOnPlayMirrorContext.get_Target for ally-card null-target fallback.");
+                }
+                else GD.PrintErr("[AiTeammate][Coord] CardOnPlayMirrorContext.get_Target getter missing.");
+
+                MethodInfo playerGetter = AccessTools.PropertyGetter(ctx, "TargetPlayer");
+                if (playerGetter != null)
+                {
+                    harmony.Patch(playerGetter, new HarmonyMethod(typeof(CombatSolverMirrorFallbackPatches), "TargetPlayerPrefix"));
+                    GD.Print("[AiTeammate][Coord] Hooked CardOnPlayMirrorContext.get_TargetPlayer for ally-card null-target fallback.");
+                }
+            }
+            catch (Exception ex) { GD.PrintErr("[AiTeammate][Coord] CardOnPlayMirrorContext hook failed: " + ex.Message); }
+        }
+
+        public static bool TargetPrefix(object __instance, ref Creature __result)
+        {
+            try
+            {
+                object cardPlay = GetCardPlay(__instance);
+                if (cardPlay != null && GetPlayTarget(cardPlay) != null) return true;
+                Creature fallback = ResolveFallbackCreature(__instance, cardPlay);
+                if (fallback == null) return true;
+                __result = fallback;
+                _targetFallbacks++;
+                if (_targetFallbacks <= 8 || (_targetFallbacks % 200) == 0)
+                    GD.Print("[AiTeammate][Coord] cs-mirror-target-fallback count=" + _targetFallbacks + " card=" + DescribeCard(cardPlay) + " target=" + DescribeCreature(fallback));
+                return false;
+            }
+            catch { return true; }
+        }
+
+        public static bool TargetPlayerPrefix(object __instance, ref Player __result)
+        {
+            try
+            {
+                object cardPlay = GetCardPlay(__instance);
+                if (cardPlay != null && GetPlayTarget(cardPlay) != null) return true;
+                Player p = null;
+                try { p = Member(cardPlay, "Player") as Player; } catch { }
+                if (p == null)
+                {
+                    Creature c = ResolveFallbackCreature(__instance, cardPlay);
+                    if (c != null) { try { p = c.Player; } catch { } }
+                }
+                if (p == null) return true;
+                __result = p;
+                _targetPlayerFallbacks++;
+                if (_targetPlayerFallbacks <= 8 || (_targetPlayerFallbacks % 200) == 0)
+                    GD.Print("[AiTeammate][Coord] cs-mirror-target-player-fallback count=" + _targetPlayerFallbacks + " card=" + DescribeCard(cardPlay));
+                return false;
+            }
+            catch { return true; }
+        }
+
+        private static object GetCardPlay(object context)
+        {
+            try
+            {
+                if (context == null) return null;
+                if (_ctxCardPlayProp != null) { try { return _ctxCardPlayProp.GetValue(context, null); } catch { } }
+                if (_ctxCardPlayField != null) { try { return _ctxCardPlayField.GetValue(context); } catch { } }
+                return Member(context, "CardPlay");
+            }
+            catch { return null; }
+        }
+
+        private static object GetPlayTarget(object cardPlay)
+        {
+            try
+            {
+                if (cardPlay == null) return null;
+                if (_cardPlayTargetProp == null) _cardPlayTargetProp = AccessTools.Property(cardPlay.GetType(), "Target");
+                if (_cardPlayTargetProp != null) { try { return _cardPlayTargetProp.GetValue(cardPlay, null); } catch { } }
+                return Member(cardPlay, "Target");
+            }
+            catch { return null; }
+        }
+
+        private static Creature ResolveFallbackCreature(object context, object cardPlay)
+        {
+            try
+            {
+                object card = Member(cardPlay, "Card");
+                if (card == null) card = Member(context, "OriginalCard");
+                if (card == null) card = Member(context, "PreviewCard");
+
+                object combatState = Member(context, "CombatState");
+                object targetType = Member(card, "TargetType");
+                string tt = targetType != null ? targetType.ToString() : "";
+                if (tt.IndexOf("Enemy", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Creature enemy = FirstAlive(combatState, "HittableEnemies");
+                    if (enemy == null) enemy = FirstAlive(combatState, "Enemies");
+                    if (enemy != null) return enemy;
+                }
+
+                Creature self = PlayerCreature(Member(cardPlay, "Player"));
+                if (self != null) return self;
+                self = PlayerCreature(Member(card, "Owner"));
+                if (self != null) return self;
+                Creature anyPlayer = FirstAlive(combatState, "PlayerCreatures");
+                if (anyPlayer != null) return anyPlayer;
+                return FirstAlive(combatState, "Enemies");
+            }
+            catch { return null; }
+        }
+
+        private static Creature PlayerCreature(object player)
+        {
+            try
+            {
+                if (player == null) return null;
+                return Member(player, "Creature") as Creature;
+            }
+            catch { return null; }
+        }
+
+        private static Creature FirstAlive(object combatState, string memberName)
+        {
+            try
+            {
+                if (combatState == null) return null;
+                IEnumerable list = Member(combatState, memberName) as IEnumerable;
+                if (list == null) return null;
+                foreach (object item in list)
+                {
+                    Creature c = item as Creature;
+                    if (c != null && c.IsAlive) return c;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static object Member(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                Type t = obj.GetType();
+                PropertyInfo p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null) { try { return p.GetValue(obj, null); } catch { } }
+                FieldInfo f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null) { try { return f.GetValue(obj); } catch { } }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string DescribeCard(object cardPlay)
+        {
+            try
+            {
+                object card = Member(cardPlay, "Card");
+                if (card == null) return "unknown";
+                object id = Member(card, "Id");
+                return id != null ? id.ToString() : card.GetType().Name;
+            }
+            catch { return "unknown"; }
+        }
+
+        private static string DescribeCreature(Creature c)
+        {
+            try
+            {
+                if (c == null) return "null";
+                object name = Member(c, "Name");
+                return (name != null ? name.ToString() : c.GetType().Name) + "#" + c.GetHashCode();
+            }
+            catch { return "creature"; }
+        }
+    }
+
     public static class TurnFlowPatches
 
     {
@@ -26831,6 +35973,9 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 TurnCoordinator.MidDeployStartTime = DateTime.MinValue;
                 TurnCoordinator.PendingNativeChoiceContinuation = true;
                 TurnCoordinator.NativeChoiceFailureTime = DateTime.UtcNow;
+                // Directive #5.89 T2: telemetry only - record the cause so greedy-trigger can name it.
+                TurnCoordinator.P2GreedyTriggerHint = "choice-failure";
+                TurnCoordinator.NoteSolverEvent("native-choice-failure");
                 GD.Print(string.Format("[AiTeammate][Coord] solver-native-choice-recovery: caught PauseAfterNativeChoiceFailure on turn={0}, scheduling post-action continuation", turn));
             }
             catch (Exception ex)
@@ -26880,14 +36025,27 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
             {
 
+                TurnCoordinator.CacheDeploymentCall(TurnCoordinator.StartFullAutoDeploymentMethod, __args, "full-auto", TurnCoordinator.TurnNumber, __instance);
+
                 CombatState state = ResolveStateFromArgs(__args);
                 object result = ResolveResultFromArgs(__args);
                 TurnCoordinator.RecordDeploymentEntryTelemetry("full-auto", __args, result, state, __instance);
+                // Directive #5.87: plan telemetry must be captured on every deployment entry, even when
+                // CoordinationEnabled is false (DeployCurrentTurnPrefix returns before its own call).
+                TurnCoordinator.RecordPlanTelemetry(__args, "StartFullAutoDeploymentPrefix");
+                TurnCoordinator.BeginStartDeploymentCleanupWindow("full-auto");
                 TurnCoordinator.ArmIndependentP2Lifeline("StartFullAutoDeployment");
 
                 TurnCoordinator.DeploySeenThisTurn = true;
 
+                // Directive #5.86 (Task 1B): the pending search result is being deployed, so the
+                // recalculation request that armed RecalcRequestedThisTurn is satisfied. Without this
+                // the end-turn audit kept reporting solverRecalculating=True long after P2 was done.
+                TurnCoordinator.RecalcSucceeded = true;
+                TurnCoordinator.PlanEmptyRecoveryInProgress = false;
+
                 GD.Print("[AiTeammate][Coord] full-auto-deploy-enter turn=" + TurnCoordinator.TurnNumber + " method=" + (__instance != null ? __instance.GetType().FullName : "unknown"));
+                TurnCoordinator.NoteSolverEvent("full-auto-deploy-enter");
 
             }
 
@@ -26909,27 +36067,38 @@ private static void PatchFlowCoordinator(Harmony harmony)
         {
             try
             {
-                // Directive #5.35 T1.2: Cache solver controller and args immediately
-                if (__instance != null)
-                {
-                    TurnCoordinator.CachedSolverController = __instance;
-                }
-                if (__args != null)
-                {
-                    TurnCoordinator.CachedDeployArgs = __args;
-                }
+                TurnCoordinator.CacheDeploymentCall(TurnCoordinator.StartDeploymentMethod, __args, "start-deploy", TurnCoordinator.TurnNumber, __instance);
 
                 CombatState state = ResolveStateFromArgs(__args);
                 object result = ResolveResultFromArgs(__args);
                 TurnCoordinator.RecordDeploymentEntryTelemetry("start-deploy", __args, result, state, __instance);
+                // Directive #5.87: capture the plan here too, and mark the upcoming internal
+                // CancelDeployment/CompleteDeployment as pre-deploy cleanup rather than a real end.
+                TurnCoordinator.RecordPlanTelemetry(__args, "StartDeploymentPrefix");
+                TurnCoordinator.BeginStartDeploymentCleanupWindow("start-deploy");
                 TurnCoordinator.ArmIndependentP2Lifeline("StartDeployment");
 
                 TurnCoordinator.DeploySeenThisTurn = true;
+
+                // Directive #5.86 (Task 1B): the pending search result is being deployed, so the
+                // recalculation request that armed RecalcRequestedThisTurn is satisfied. Without this
+                // the end-turn audit kept reporting solverRecalculating=True long after P2 was done.
+                TurnCoordinator.RecalcSucceeded = true;
+                TurnCoordinator.PlanEmptyRecoveryInProgress = false;
                 TurnCoordinator.MidDeployStartTime = DateTime.UtcNow;
                 TurnCoordinator.MidDeployHangTimeoutTriggered = false;
                 TurnCoordinator.MidDeployHangCriticalTriggered = false;
 
                 GD.Print("[AiTeammate][Coord] start-deploy-enter turn=" + TurnCoordinator.TurnNumber);
+
+                if (TurnCoordinator.IsTerminalCombatFinalized || TurnCoordinator.AreAllPlayersDead())
+                {
+                    TurnCoordinator.LogTerminalCombatFinalized("all-players-dead");
+                    TurnCoordinator.IsDeploying = false;
+                    // Directive #5.87: aborted deploy never reaches DeployCurrentTurn; release the window.
+                    TurnCoordinator.EndStartDeploymentCleanupWindow("start-deploy-aborted-terminal");
+                    return false;
+                }
 
                 if (!TurnCoordinator.IsInCombat())
                 {
@@ -26953,6 +36122,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     if (!proceed)
                     {
                         TurnCoordinator.IsDeploying = false;
+                        // Directive #5.87: waiting/held deploy never reaches DeployCurrentTurn.
+                        TurnCoordinator.EndStartDeploymentCleanupWindow("start-deploy-aborted-eval");
                         return false;
                     }
                 }
@@ -27063,10 +36234,28 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 GD.Print("[AiTeammate][Coord] prefix-enter turn=" + TurnCoordinator.TurnNumber);
                 TurnCoordinator.RecordDeploymentEntryTelemetry("deploy-current-turn", __args, ResolveResultFromArgs(__args), null, __instance);
+                // Directive #5.87: this must run before the CoordinationEnabled gate below, otherwise a
+                // coordination-disabled run never records plan-len/plan-card and everything downstream
+                // (early-end detection, summaries) reports an empty plan that never existed.
+                TurnCoordinator.RecordPlanTelemetry(__args, "DeployCurrentTurnPrefix");
+                TurnCoordinator.EndStartDeploymentCleanupWindow("deploy-current-turn");
+                TurnCoordinator.HasEnteredDeployCurrentTurnThisSession = true;
+                int deployPlanCount = TurnCoordinator.GetPlanActionCount(__args);
+                if (TurnCoordinator.PendingPotionContinuation || (TurnCoordinator.HasTriggeredPotionContinuationThisTurn && !TurnCoordinator.PotionContinuationDeployedThisTurn))
+                {
+                    TurnCoordinator.PotionContinuationDeployedThisTurn = true;
+                    GD.Print(string.Format("[AiTeammate][Coord] p2-continuation-deploy-entry owner=P2 action-count={0}", deployPlanCount));
+                }
 
 
 
                 TurnCoordinator.DeploySeenThisTurn = true;
+
+                // Directive #5.86 (Task 1B): the pending search result is being deployed, so the
+                // recalculation request that armed RecalcRequestedThisTurn is satisfied. Without this
+                // the end-turn audit kept reporting solverRecalculating=True long after P2 was done.
+                TurnCoordinator.RecalcSucceeded = true;
+                TurnCoordinator.PlanEmptyRecoveryInProgress = false;
 
                 TurnCoordinator.HasEnteredDeployPrefixThisTurn = true;
 
@@ -27130,69 +36319,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
 
-                // 1. Cache __instance, __args, and method
-
-                if (__instance != null)
-
-                {
-
-                    TurnCoordinator.CachedSolverController = __instance;
-
-                }
-
-                if (__args != null)
-
-                {
-
-                    TurnCoordinator.CachedDeployArgs = __args;
-
-                    if (__args.Length > 2)
-
-                    {
-
-                        if (TurnCoordinator.CachedDeployResult == null)
-
-                        {
-
-                            TurnCoordinator.CachedDeployResult = __args[2];
-
-                        }
-
-                    }
-
-                    else if (__args.Length > 1 && TurnCoordinator.CachedDeployResult == null)
-
-                    {
-
-                        TurnCoordinator.CachedDeployResult = __args[1];
-
-                    }
-
-                }
-
-                if (TurnCoordinator.DeployCurrentTurnMethod == null)
-
-                {
-
-                    var solverType = AccessTools.TypeByName("CombatSolver.SolverController");
-
-                    if (solverType != null)
-
-                    {
-
-                        TurnCoordinator.DeployCurrentTurnMethod = AccessTools.Method(solverType, "DeployCurrentTurn");
-
-                    }
-
-                    else if (__instance != null)
-
-                    {
-
-                        TurnCoordinator.DeployCurrentTurnMethod = AccessTools.Method(__instance.GetType(), "DeployCurrentTurn");
-
-                    }
-
-                }
+                // 1. Cache deployment call with verified signature
+                TurnCoordinator.CacheDeploymentCall(TurnCoordinator.DeployCurrentTurnMethod, __args, "deploy-current-turn", TurnCoordinator.TurnNumber, __instance);
 
 
 
@@ -27216,7 +36344,8 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                     return true;
 
-                TurnCoordinator.RecordPlanTelemetry(__args, "DeployCurrentTurnPrefix");
+                // Directive #5.87: plan telemetry is captured at the top of this prefix now
+                // (before the CoordinationEnabled gate), so no duplicate call here.
 
 
 
@@ -27432,6 +36561,16 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 TurnCoordinator.ArmIndependentSearchHeartbeat("RequestSearchPrefix");
 
+                // Directive #5.91 T1: enforce the CombatSolver per-layer time budget before every search.
+                TurnCoordinator.EnsureOptimalCombatSolverSettings();
+
+                // Directive #5.90 T1.3: every new search invalidates the "deployment already completed"
+                // and "early end reported" latches. Without this the fresh search was declared stale on
+                // its first tick (staleReason=deployment-already-completed) because
+                // ResetTurnState("OnEndedTurnLocally") had set HasCompletedDeploymentThisTurn=true.
+                TurnCoordinator.HasCompletedDeploymentThisTurn = false;
+                TurnCoordinator.SolverEarlyEndReportedThisTurn = false;
+
                 if (TurnCoordinator.IsSolverDeploying() || TurnCoordinator.IsDeploying)
 
                 {
@@ -27475,6 +36614,16 @@ private static void PatchFlowCoordinator(Harmony harmony)
         public static void CompleteDeploymentPostfix()
 
         {
+            // Directive #5.87: SolverController.StartDeployment() calls CancelDeployment()/CompleteDeployment()
+            // to clean up the previous session BEFORE it calls DeployCurrentTurn. That internal cleanup used
+            // to look like a finished deployment with plan-len=-1, firing plan-empty-retry which reset the
+            // solver state and cancelled the deployment that was just about to run.
+            if (TurnCoordinator.IsStartDeploymentCleanupWindowActive())
+            {
+                GD.Print("[AiTeammate][Coord] complete-deployment-ignored reason=pre-start-deploy-cleanup");
+                return;
+            }
+
             TurnCoordinator.DisarmIndependentSearchHeartbeat("deployment-complete");
 
             if (TurnCoordinator.IsSuppressingCancelHook)
@@ -27509,6 +36658,14 @@ private static void PatchFlowCoordinator(Harmony harmony)
             TurnCoordinator.MidDeployHangCriticalTriggered = false;
 
             TurnCoordinator.DeploymentEndTime = DateTime.UtcNow;
+
+            // Directive #5.92 T2.2: the deployment that consumed the 0-card plan is now fully finished,
+            // so the solver no longer owns P2's turn. Run the continuation CheckP2EndTurnGate deferred
+            // while IsDeploying was still true. Runs BEFORE the summary block below so that, when greedy
+            // enqueues cards, DetectSolverEarlyEnd sees the deployment backlog and does not fire a
+            // second plan-empty recalc against work that is already in flight.
+            TurnCoordinator.TryRunPostDeployContinuation();
+
             try
             {
                 var cmNow = CombatManager.Instance;
@@ -27523,12 +36680,37 @@ private static void PatchFlowCoordinator(Harmony harmony)
                     TurnCoordinator.UpdateSearchTelemetry("solver-early-end");
                     GD.Print(string.Format("[AiTeammate][Coord] solver-early-end reason={0} search-status={1} search-nodes={2} plan-len={3} playable={4} attack={5}", earlyReason, TurnCoordinator.P2SearchStatusThisTurn, TurnCoordinator.P2SearchNodesThisTurn, TurnCoordinator.P2PlanLengthThisTurn, hasPlayable, hasAttack));
                     TurnCoordinator.SolverEarlyEndReportedThisTurn = true;
-                    if (earlyReason == "plan-empty" && !TurnCoordinator.HasRetriedEmptyPlanThisTurn)
+                    if (earlyReason == "plan-empty")
                     {
-                        TurnCoordinator.HasRetriedEmptyPlanThisTurn = true;
-                        GD.Print("[AiTeammate][Coord] plan-empty-recalc-once");
-                        TurnCoordinator.RequestRecalculation(stNow, "plan-empty-retry");
-                        reason = "plan-empty";
+                        if (TurnCoordinator.IsPlayer1Dead())
+                        {
+                            TurnCoordinator.CheckDeadP1ZeroProgressFallback("deploy-plan-empty-dead-p1");
+                            reason = "plan-empty-dead-p1";
+                        }
+                        else if (!TurnCoordinator.HasRetriedEmptyPlanThisTurn)
+                        {
+                            TurnCoordinator.HasRetriedEmptyPlanThisTurn = true;
+                            TurnCoordinator.P2PlanEmptyRecalcCountThisTurn++;
+                            GD.Print("[AiTeammate][Coord] plan-empty-recalc-once");
+                            TurnCoordinator.RequestRecalculation(stNow, "plan-empty-retry");
+                            reason = "plan-empty";
+                        }
+                        else
+                        {
+                            if (hasPlayable && !TurnCoordinator.P2FallbackExecutedThisTurn)
+                            {
+                                TurnCoordinator.TriggerP2Fallback(p2Now, stNow);
+                                reason = "fallback-greedy";
+                            }
+                            else
+                            {
+                                TurnCoordinator.P2FallbackExhaustedThisTurn = true;
+                                TurnCoordinator.LogFallbackExhaustedSet("plan-empty-exhausted");
+                                GD.Print(string.Format("[AiTeammate][Coord] p2-plan-empty-fallback-exhausted turn={0}", TurnCoordinator.TurnNumber));
+                                TurnCoordinator.EnqueueP2EndTurn(p2Now);
+                                reason = "plan-empty-exhausted";
+                            }
+                        }
                     }
                     else if (!TurnCoordinator.HasRetriedSolverEarlyEndThisTurn)
                     {
@@ -27627,6 +36809,26 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
             }
 
+            // Directive #5.90 T1.4: P1 pressing End Turn is NOT a P2 turn boundary. ResetTurnState wipes
+            // P2's per-turn recovery latches AND sets HasCompletedDeploymentThisTurn = true mid-round,
+            // which made IsSolverGenuinelyActive declare P2's live search stale
+            // (staleReason=deployment-already-completed) and fire greedy while solverActive=True.
+            // Placed AFTER the deploy/hold block on purpose: when P2 really is deploying, that block's
+            // hold-release + deferred-restore behaviour must still win.
+            ulong p1IdEnd = TurnCoordinator.GetPlayer1NetId();
+            if (p1IdEnd != 0 && endedOwner == p1IdEnd && TurnCoordinator.IsPlayPhase())
+            {
+                var cmP1End = CombatManager.Instance;
+                var stP1End = cmP1End != null ? cmP1End.DebugOnlyGetState() : null;
+                Player p2NowEnd = (stP1End != null && stP1End.Players != null && stP1End.Players.Count > 1) ? stP1End.Players[stP1End.Players.Count - 1] : null;
+                if (p2NowEnd != null && cmP1End != null && !cmP1End.IsPlayerReadyToEndTurn(p2NowEnd))
+                {
+                    GD.Print("[AiTeammate][Coord] on-ended-turn-locally p1-ended-mid-round: preserving P2 turn state turn=" + TurnCoordinator.TurnNumber);
+                    RestorePlayer1ControlIfActive("wakuu-p1-restore-after-p1-end", true);
+                    return;
+                }
+            }
+
             TurnCoordinator.ResetTurnState("OnEndedTurnLocally");
 
             RestorePlayer1ControlIfActive("wakuu-p1-restore-after-p1-end", true);
@@ -27642,6 +36844,10 @@ private static void PatchFlowCoordinator(Harmony harmony)
             try
 
             {
+                // Directive #5.57: Diagnostic log for fixed P1 UI restore
+                string phaseName = TurnCoordinator.GetCurrentCombatPhaseString();
+                GD.Print(string.Format("[AiTeammate][Coord] fixed-p1-ui-restore phase={0} source={1}", phaseName, source ?? "unknown"));
+
                 if (internalP1Recovery && TurnCoordinator.P2ActionSenderScopeDepth > 0)
                 {
                     TurnCoordinator.MarkP1RestoreAfterP2Scope(source ?? "restore-request");
@@ -27676,7 +36882,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                 {
 
-                    // Player 1 is dead. Switch logical control to Player 2 with UI suppressed (death spectator: empty hand, corpse state)
+                    // Player 1 is dead. Switch logical control to Player 2 unsuppressed and bind EndTurnButton to Player 2
 
                     var player2 = state.Players[state.Players.Count - 1];
 
@@ -27684,7 +36890,11 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                     {
 
-                        SwitchControlToPlayer(player2.NetId, "wakuu-player1-dead", true);
+                        SwitchControlToPlayer(player2.NetId, "wakuu-player1-dead", false);
+
+                        LocalContext.NetId = player2.NetId;
+
+
 
                         if (!cm.IsPlayerReadyToEndTurn(player2))
 
@@ -27694,15 +36904,33 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
                         }
 
-                        if (player1 != null)
+
+
+                        var room = NCombatRoom.Instance;
+
+                        var combatUi = room != null ? room.Ui : null;
+
+                        if (combatUi != null && combatUi.EndTurnButton != null)
 
                         {
 
-                            TurnCoordinator.RebindHandContainerToPlayer1(cm, state, player1);
+                            var playerHandField = AccessTools.Field(combatUi.EndTurnButton.GetType(), "_playerHand");
+
+                            if (playerHandField != null)
+
+                            {
+
+                                var p2HandPile = PileType.Hand.GetPile(player2);
+
+                                playerHandField.SetValue(combatUi.EndTurnButton, p2HandPile);
+
+                            }
 
                         }
 
-                        GD.Print("[AiTeammate] Player 1 is dead. Switched logical control to Player 2 (" + player2.NetId + ") with UI suppressed (corpse spectator view).");
+
+
+                        GD.Print("[AiTeammate] Player 1 is dead. Bound combat UI & EndTurnButton to Player 2 (" + player2.NetId + ").");
 
                     }
 
@@ -27713,17 +36941,30 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
 
                 ulong p1Id = TurnCoordinator.GetPlayer1NetId();
-                ulong draCurrentId = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong draBefore = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong localBefore = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
 
-                if (LocalContext.NetId != p1Id || (TurnCoordinator.FixedP1CombatControl && draCurrentId != 0 && draCurrentId != p1Id))
-
+                if (localBefore != p1Id || (TurnCoordinator.FixedP1CombatControl && draBefore != 0 && draBefore != p1Id))
                 {
-
                     SwitchControlToPlayer(player1.NetId, source, true, internalP1Recovery);
-
                 }
 
-                if (!TurnCoordinator.FixedP1CombatControl && !cm.IsPlayerReadyToEndTurn(player1))
+                ulong draAfter = TurnFlowPatches.GetDraCurrentControlledPlayerId();
+                ulong localAfter = LocalContext.NetId.HasValue ? LocalContext.NetId.Value : 0;
+
+                // Directive #5.58-B Task 2: Ensure LocalContext is aligned to P1
+                if (TurnCoordinator.FixedP1CombatControl && p1Id != 0 && localAfter != p1Id)
+                {
+                    LocalContext.NetId = p1Id;
+                    localAfter = p1Id;
+                }
+
+                GD.Print(string.Format("[AiTeammate][Coord] p1-restore-completed source={0} beforeDRA={1} afterDRA={2} beforeLocal={3} afterLocal={4}",
+                    source ?? "unknown", draBefore, draAfter, localBefore, localAfter));
+
+                // Directive #5.58-C & #5.60: Reliably clear input lock if P1 is alive and not ready to end turn
+                TurnCoordinator.P1InputLockDepth = 0;
+                if (!cm.IsPlayerReadyToEndTurn(player1) && !TurnCoordinator.IsP1ActionExecuting)
 
                 {
 
@@ -27756,7 +36997,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
         {
             try
             {
-                object phase = TurnCoordinator.GetMemberValue(state, "Phase") ?? TurnCoordinator.GetMemberValue(cm, "Phase");
+                object phase = TurnCoordinator.GetMemberValue(state, "CombatPhase") ?? TurnCoordinator.GetMemberValue(state, "Phase") ?? TurnCoordinator.GetMemberValue(cm, "Phase");
                 object disabled = TurnCoordinator.GetMemberValue(cm, "PlayerActionsDisabled");
                 bool ready = player1 != null && cm != null && cm.IsPlayerReadyToEndTurn(player1);
                 string buttonState = "unknown";
@@ -27765,7 +37006,7 @@ private static void PatchFlowCoordinator(Harmony harmony)
                 var button = ui != null ? ui.EndTurnButton : null;
                 if (button != null)
                 {
-                    object value = TurnCoordinator.GetMemberValue(button, "State");
+                    object value = TurnCoordinator.GetMemberValue(button, "_state") ?? TurnCoordinator.GetMemberValue(button, "State");
                     if (value != null) buttonState = value.ToString();
                 }
                 GD.Print(string.Format("[AiTeammate][Coord] p1-restore-result source={0} action-owner={1} scopeDepth={2} LocalContext={3} DRA={4} phase={5} p1-ready={6} PlayerActionsDisabled={7} button-state={8}",
@@ -28097,6 +37338,11 @@ private static void PatchFlowCoordinator(Harmony harmony)
         public static void SwitchControlToPlayer(ulong targetNetId, string source, bool suppressUi = true, bool allowP1Recovery = false)
 
         {
+            if (TurnCoordinator.IsTerminalCombatFinalized || TurnCoordinator.AreAllPlayersDead())
+            {
+                TurnCoordinator.LogTerminalCombatFinalized("all-players-dead");
+                return;
+            }
 
             if (string.IsNullOrEmpty(source) || !source.StartsWith("wakuu-", StringComparison.OrdinalIgnoreCase))
 
@@ -28310,11 +37556,12 @@ private static void PatchFlowCoordinator(Harmony harmony)
 
             var setter = AccessTools.PropertySetter(typeof(CombatManager), "PlayerActionsDisabled");
 
-            if (setter != null)
+            if (setter != null && cm != null)
 
             {
 
                 setter.Invoke(cm, new object[] { disabled });
+                GD.Print(string.Format("[AiTeammate][Coord] set-player-actions-disabled disabled={0}", disabled));
 
             }
 

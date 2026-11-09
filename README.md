@@ -1,61 +1,149 @@
-# 智能人机队友 (AiTeammate) — 杀戮尖塔2 双人 AI 队友 Mod
+# 智能人机队友 (AiTeammate) — 杀戮尖塔 2 双人 AI 队友模组
 
-**Slay the Spire 2 two-player AI teammate mod.** 你操作 P1，P2 由 AI 自动完成全部流程。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Game Version: v0.111.0+](https://img.shields.io/badge/StS2-v0.111.0+-brightgreen.svg)](https://store.steampowered.com/app/2868840/Slay_the_Spire_2/)
+[![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
 
-> 状态：私有开发中。已测试游戏版本 **v0.111.0**（Windows）。游戏更新后需要重新适配。
+**AiTeammate (智能人机队友)** 是为《杀戮尖塔 2》（Slay the Spire 2）开发的本地双人同屏 AI 队友模组。你只需专注操作 1 号玩家（P1 人类），2 号玩家（P2 队友）将由高智能 AI 自动化协同接管全部流程，带给你原汁原味的“联机开黑”双人爬塔体验！
 
-## 功能 / Features
+---
 
-P2（AI 队友）会自动处理：
+## 🌟 核心特性 (Key Features)
 
-- **战斗**：调用 CombatSolver 求解出牌路线，求解失败时有保底出牌（贪心）和强制结束回合兜底。
-- **选牌**：卡牌奖励、战斗内选牌（弃牌/消耗/药水三选一等）、事件变牌/升级/删牌。
-- **地图**：自动跟随 P1 的路线投票。
-- **事件 / 篝火 / 先古之民（Neow）**：自动选择选项。
-- **宝箱**：自动选遗物。
-- **商店**：删牌、买遗物、买卡牌、买药水（带价值评估与黑名单）。
-- **前台控制**：战斗中前台固定为 P1，P2 的牌不会出现在你的手牌里。
+### 1. 本地双人 AI 协同模式
+- **一键开启，无缝体验**：在游戏主菜单一键开启“AI队友模式”，自由挑选 P1 与 P2 角色职业（铁甲战士、静默猎手、故障机器人、死灵术士等）。
+- **固定 P1 前台控制**：战斗内操作权、快捷键与视角始终锁定于 P1，P2 决策全部在后台异步推进，出牌与行动互不抢焦。
 
-设置项见 `mod/aiteammate_settings.json`（自动跟路线、自动选牌、自动事件、自动篝火、自动先古、商店删牌、固定 P1 控制等开关）。
+### 2. 战斗内高强度智能决策 (Powered by CombatSolver)
+- **纯内存动态适配**：内置 `CombatSolverInMemoryPatcher`，在游戏启动时对原版创意工坊 `CombatSolver (0.50.1)` 自动进行 22 处纯内存 IL 补丁注入与 Harmony 双重保底，**完全无需修改磁盘上的任何第三方文件，零磁盘文件侵入**。
+- **深度路径规划**：P2 手牌、能量、药水与目标推演完全接入蒙特卡洛/束搜索求解器，打出最优合牌与斩杀线。
+- **智能重算节流与兜底**：包含后台异步预热求解、回合内增量重算节流、单牌快速决策和超时防卡死熔断机制。
 
-## 依赖 / Dependencies
+### 3. 全局非战斗策略协同 (Powered by SpireStrategist)
+- **非战斗全流程托管**：通过反射无侵入连接本地安装的 `SpireStrategist (0.6.72+)`，全面接管 P2 的全流程决策：
+  - **涅奥开局**：自动评估并选取最适合 P2 角色构筑的初始祝福/诅咒。
+  - **战后奖励**：后台静默领奖，三选一卡牌智能抓取，药水智能拾取（药水栏已满时基于战术价值智能替换）。
+  - **随机事件**：依据当前牌组流派、血量与危险度，自动做出最稳健或收益最大的事件抉择。
+  - **休息处（营火）**：根据全队危急度和卡牌升级权重，智能在睡觉回血、关键牌锻造/升级间权衡。
+  - **商店采购**：智能删牌、购买关键核心卡、遗物评估与药水补给。
+  - **Boss / 宝箱遗物**：深度结合全队遗物搭配，精准评估抓取高契合度遗物。
+- **双人队伍协同感知**：P2 在评估策略时会实时感知 P1 血量危机程度、团队防御压力与队伍遗物去重。
 
-| Mod | 说明 |
-|---|---|
-| DualRoleAdventure（双角色冒险 / 本地多控） | **必需**，`AiTeammate.json` 中声明的依赖，提供 P2 角色 |
-| CombatSolver 0.50.1（Torch，MIT） | **必需**，P2 战斗出牌，通过反射调用。当前使用本地修补版（补丁说明待补充） |
-| STS2-RitsuLib ≥ 0.6.0 | CombatSolver 的依赖（测试版本 0.6.9） |
-| SpireStrategist 0.6.22（MIT） | 商店遗物价值评估 |
+### 4. 极致清爽的原生交互
+- **P2 悬浮手牌实时预览**：战斗中鼠标悬停在左上角 P2 角色状态栏上方，即可展开原生美观的 **P2 手牌悬浮窗**，实时查看 P2 当前手牌、真实耗能、升级状态与完整动态描述。
+- **快捷开关面板 (HUD Toggles)**：右上角内置半透明极简控制栏，支持热键一键切换界面显示：
+  - `F7`：一键隐藏 / 显示 `CombatSolver` 运算分析面板。
+  - `F8`：一键隐藏 / 显示本地多控辅助调试 UI。
+  - 切换状态自动保存至配置文件，下次进游戏无需重复设置。
 
-本仓库**不包含**以上任何 mod 或游戏文件，请从各自来源获取。详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+---
 
-## 安装 / Install
+## 📦 前置依赖 (Prerequisites)
 
-1. 安装上面的依赖 mod。
-2. 将 `AiTeammate.dll`（见 Releases）和 `mod/` 目录里的文件放到 `<游戏目录>/mods/AiTeammate/`。
-3. 启动游戏，开启双人本地模式。
+为了正常运行本模组，请确保游戏已订阅并安装以下前置项目（均可在 Steam 创意工坊或 GitHub 获得）：
 
-## 目录结构
+| 依赖组件 | 推荐版本 | 说明与获取途径 |
+| :--- | :--- | :--- |
+| **DualRoleAdventure** (双角色冒险 / 本地多控) | 最新版 | **必需**，提供单机双角色同屏基础会话与数据层支撑 |
+| **CombatSolver** (战斗求解器) | `0.50.1` | **必需**，驱动 P2 战斗出牌。[Steam 创意工坊](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961) 原版即可，无需任何磁盘修改 |
+| **SpireStrategist** (全局策略助手) | `0.6.72+` | **强烈推荐**，驱动 P2 选牌、事件、商店、营火与遗物决策。[GitHub 仓库](https://github.com/shaokangqian4-art/SpireStrategist) |
+| **STS2-RitsuLib** (基础运行库) | `0.6.0+` | `CombatSolver` 与 `SpireStrategist` 的底层依赖，创意工坊订阅即可 |
+
+> **提示**：本模组遵循社区开源规范，仓库中**不包含、不重新分发**上述任何第三方的 DLL 二进制文件。
+
+---
+
+## 🚀 安装指南 (Installation)
+
+1. **安装前置模组**：在 Steam 创意工坊订阅并启用上述前置模组。
+2. **下载或放置模组文件**：
+   - 前往本仓库 [Releases](../../releases) 页面下载最新发布的压缩包，或将本仓库 `mod/` 目录下的所有文件解压复制；
+   - 放置到你的游戏根目录下：`<Slay the Spire 2 根目录>/mods/AiTeammate/`。
+3. **确保目录结构如下**：
+   ```
+   Slay the Spire 2/
+   └── mods/
+       └── AiTeammate/
+           ├── AiTeammate.dll
+           ├── AiTeammate.json
+           ├── card_scores.json
+           └── aiteammate_settings.json
+   ```
+4. **启动游戏**：在游戏主菜单点击“AI队友模式”，选择双方角色后即可开始冒险！
+
+---
+
+## ⚙️ 个性化配置 (Configuration)
+
+配置文件位于 `mods/AiTeammate/aiteammate_settings.json`，可随时修改自定义参数：
+
+```json
+{
+  "PreferredTeammateCharacterIndex": 1,   // 默认 P2 角色索引
+  "AiDecisionProfile": 1,                 // AI 决策激进/平衡预设
+  "ActionDelaySeconds": 0.45,             // P2 动作间执行延迟（秒），使观感更自然
+  "SearchTimeLimitSeconds": 2.5,          // CombatSolver 单回合搜索时间上限
+  "SearchMaxExpandedNodes": 4096,         // 搜索树最大展开节点数
+  "SolverMemoryBudgetMB": 4096,           // 求解器内存预算 (MB)
+  "EnablePlannedTurnExecution": true,     // 启用完整规划下发
+  "MaxCombatActionsPerTurn": 25,          // 每回合最大动作上限（防止死循环）
+  "AutoAdvanceScreens": true,             // 战后自动结算与跳过非交互界面
+  "AutoHandleEvents": true,               // P2 自动选择事件
+  "AutoHandleRestSite": true,             // P2 自动篝火营火抉择
+  "AutoHandleMerchant": true,             // P2 自动商店采购与删牌
+  "EnableDebugVerbosity": false,          // 调试诊断日志输出开关
+  "HideSolverUi": false,                  // 是否默认隐藏 CombatSolver UI (快捷键 F7)
+  "HideMultiControlUi": false             // 是否默认隐藏多控 UI (快捷键 F8)
+}
+```
+
+---
+
+## 🛠️ 从源码构建 (Building from Source)
+
+本项目采用兼容 .NET 9 与 .NET Framework 4.0 的 C# 5 语法编写，仓库已自带一键编译脚本：
+
+### 构建步骤
+1. 打开 PowerShell 终端，进入仓库根目录；
+2. 执行构建脚本：
+   ```powershell
+   .\build.ps1
+   ```
+   *若游戏未安装在默认路径，可指定环境参数：`.\build.ps1 -Sts2Root "D:\Games\Slay the Spire 2"`*
+3. 编译完成后，生成的 `AiTeammate.dll` 将自动输出至 `mod/AiTeammate.dll`。
+
+---
+
+## 📂 仓库目录结构 (Repository Structure)
 
 ```
-src/    C# 源码（AiTeammateMod.cs, RewardBackendFlow.cs）
-mod/    mod 清单、默认设置、卡牌评分表
-docs/   开发记录（HANDOFF.md）
+AiTeammate/
+├── src/                         # 核心 C# 源码
+│   ├── AiTeammateMod.cs         # 模组主入口、协调器、内存补丁与 UI 组件
+│   └── RewardBackendFlow.cs     # 奖励/事件/商店/营火后台全自动推进流
+├── mod/                         # 发布产物与默认配置
+│   ├── AiTeammate.dll           # 模组二进制编译文件
+│   ├── AiTeammate.json          # 模组清单描述文件
+│   ├── aiteammate_settings.json # 用户可配置设置项
+│   └── card_scores.json         # 基础启发式卡牌权值评分库
+├── docs/                        # 深度架构设计与补丁归档文档
+│   ├── COMBATSOLVER_PATCHES.md  # CombatSolver 22 处内存补丁详细技术规范
+│   ├── HANDOFF.md               # 迭代架构演进与维护全量记录
+│   └── apply_combatsolver_patches.py # 脱机补丁验证与复现工具
+├── build.ps1                    # 一键构建 PowerShell 脚本
+├── THIRD_PARTY.md               # 第三方开源项目归属与致谢声明
+├── LICENSE                      # MIT 开源许可证
+└── README.md                    # 本项目使用说明文档
 ```
 
-## 构建 / Build
+---
 
-使用 .NET Framework 4.0 的 `csc.exe` 手动编译（C# 5 语法），引用游戏的 `sts2.dll`、Harmony 以及依赖 mod 的 DLL。构建脚本待补充。
+## 🤝 致谢与开源协议 (Acknowledgments & License)
 
-## 已知问题 / Known issues
+本项目采用 **[MIT License](LICENSE)** 开源许可证。
 
-- 依赖游戏内部方法的 Harmony 补丁，游戏更新后可能失效；启动时日志中的 `INIT-FAIL` 行会指出哪些补丁失败。
-- 部分第三方 mod（如 STS2RitsuLib 的右键功能）在 P2 取消出牌时可能报空指针，已在后续版本中规避。
-
-## 开发记录
-
-每次修复的指令与验证记录见 [docs/HANDOFF.md](docs/HANDOFF.md)。
-
-## 许可证
-
-待定。公开发布前请先确认依赖 mod 的许可证。
+向以下优秀的开源项目作者表示由衷的感谢（详细说明见 [THIRD_PARTY.md](THIRD_PARTY.md)）：
+- **GuyGinat** — [STS2_DualRoleAdventure](https://github.com/GuyGinat/STS2_DualRoleAdventure)
+- **Torch (Torch1230)** — [CombatSolver](https://github.com/Torch1230/CombatSolver)
+- **hotwords123** — [StS2.RandomForeseer](https://github.com/hotwords123/StS2.RandomForeseer)
+- **穷仔 (shaokangqian4-art)** — [SpireStrategist](https://github.com/shaokangqian4-art/SpireStrategist)
