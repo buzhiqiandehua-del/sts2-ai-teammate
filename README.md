@@ -44,10 +44,10 @@
 
 | 依赖组件 | 推荐版本 | 说明与获取途径 |
 | :--- | :--- | :--- |
-| **DualRoleAdventure** (双角色冒险 / 本地多控) | 最新版 | **必需**，提供单机双角色同屏基础会话与数据层支撑 |
-| **CombatSolver** (战斗求解器) | `0.50.1` | **必需**，驱动 P2 战斗出牌。[Steam 创意工坊](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961) 原版即可，无需任何磁盘修改 |
-| **SpireStrategist** (全局策略助手) | `0.6.72+` | **强烈推荐**，驱动 P2 选牌、事件、商店、营火与遗物决策。[GitHub 仓库](https://github.com/shaokangqian4-art/SpireStrategist) |
-| **STS2-RitsuLib** (基础运行库) | `0.6.0+` | `CombatSolver` 与 `SpireStrategist` 的底层依赖，创意工坊订阅即可 |
+| **[DualRoleAdventure](https://github.com/GuyGinat/STS2_DualRoleAdventure)** (双角色冒险 / 本地多控) | 最新版 | **必需**，提供单机双角色同屏基础会话与数据层支撑 |
+| **[CombatSolver](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961)** (战斗求解器) | `0.50.1` | **必需**，驱动 P2 战斗出牌。[Steam 创意工坊](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961) 原版即可，无需任何磁盘修改 |
+| **[SpireStrategist](https://github.com/shaokangqian4-art/SpireStrategist/releases)** (全局策略助手) | `0.6.72+` | **强烈推荐**，驱动 P2 选牌、事件、商店、营火与遗物决策。[GitHub 仓库](https://github.com/shaokangqian4-art/SpireStrategist) |
+| **[STS2-RitsuLib](https://github.com/BAKAOLC/STS2-RitsuLib/releases)** (基础运行库) | `0.6.0+` | `CombatSolver` 与 `SpireStrategist` 的底层依赖，创意工坊订阅即可 |
 
 > **提示**：本模组遵循社区开源规范，仓库中**不包含、不重新分发**上述任何第三方的 DLL 二进制文件。
 
@@ -128,7 +128,6 @@ AiTeammate/
 │   └── card_scores.json         # 基础启发式卡牌权值评分库
 ├── docs/                        # 深度架构设计与补丁归档文档
 │   ├── COMBATSOLVER_PATCHES.md  # CombatSolver 22 处内存补丁详细技术规范
-│   ├── HANDOFF.md               # 迭代架构演进与维护全量记录
 │   └── apply_combatsolver_patches.py # 脱机补丁验证与复现工具
 ├── build.ps1                    # 一键构建 PowerShell 脚本
 ├── THIRD_PARTY.md               # 第三方开源项目归属与致谢声明
